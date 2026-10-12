@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 01 Completion Checkpoint
+Last Updated: Phase 02 Completion Checkpoint
 
 ---
 
@@ -9,8 +9,8 @@ Last Updated: Phase 01 Completion Checkpoint
 | Phase | Description | Status | Evidence / Notes |
 | :--- | :--- | :--- | :--- |
 | **01** | **Architecture and Bootstrap** | **COMPLETED** | Monorepo, Fastify 5 API, React 18 UI, Zod validation, Pino logging, tests passing |
-| 02 | Database Schema & Migrations | PENDING | Scheduled for Instruction 02 (PostgreSQL + pgvector) |
-| 03 | Auth, Organizations & RBAC | PENDING | Scheduled for Instruction 03 |
+| **02** | **Database Schema & Migrations** | **COMPLETED** | PostgreSQL + pgvector 0.8+, 12 domain tables, sequential migrations, 15 integration tests |
+| 03 | Auth, Organizations & RBAC | PENDING | Scheduled for Instruction 03 (JWT, bcrypt, tenant RBAC) |
 | 04 | Document Upload & Parsing | PENDING | Scheduled for Instruction 04 |
 | 05 | Chunking, Embeddings & Ingestion | PENDING | Scheduled for Instruction 05 |
 | 06 | Vector Search & Base RAG | PENDING | Scheduled for Instruction 06 |
@@ -30,36 +30,47 @@ Last Updated: Phase 01 Completion Checkpoint
 
 ---
 
-## 2. Phase 01 Verification & Evidence
+## 2. Phase 02 Verification & Evidence
 
 ### Criteria Verified
-- [x] Clean install succeeds with npm 10+ and Node 20+.
-- [x] Strict TypeScript configuration enabled across all packages (`tsconfig.base.json`, apps, packages).
-- [x] Fastify API health endpoint (`GET /health`, `GET /health/live`, `GET /health/ready`) responding with application state.
-- [x] Sensitive field redaction implemented for logging (headers, secrets, tokens).
-- [x] Request ID / correlation ID tracking implemented.
-- [x] Structured error envelope (`ApiErrorResponseSchema`) with 404 handler.
-- [x] Environment validation with Zod (`apps/api/src/config/env.ts`) failing fast on invalid variables.
-- [x] Basic React frontend (`apps/web`) with live health check probe and roadmap dashboard.
-- [x] `.env.example` with safe placeholders and deferred phase annotations.
-- [x] `.gitignore` covering `.env`, build output, dependency directories, uploads/temp files, and logs.
-- [x] Architecture decisions log (`docs/architecture/decisions.md`) and setup guide (`docs/setup.md`).
-- [x] Unit and integration tests passing across workspaces without placeholder fakes.
+- [x] Sequential SQL migrations: `001_enable_pgvector.sql` and `002_create_initial_schema.sql`.
+- [x] Version tracking via `schema_migrations` table with transactional execution and rollback safety.
+- [x] pgvector extension enabled (`vector(1536)` for OpenAI `text-embedding-3-small`).
+- [x] HNSW cosine vector index on `chunks.embedding` (`USING hnsw (embedding vector_cosine_ops)`).
+- [x] Stored generated column for full-text search (`search_vector tsvector`) with GIN indexing.
+- [x] All 12 core tables created with UUID primary keys and timestamps:
+  - `users`, `organizations`, `organization_members`
+  - `documents`, `document_versions`, `chunks`
+  - `chat_sessions`, `messages`, `retrieval_runs`, `retrieval_results`
+  - `feedback`, `jobs`
+- [x] Multi-tenancy integrity constraints:
+  - Unique membership per `(organization_id, user_id)`
+  - Unique version numbering per `(document_id, version_number)`
+  - Unique job idempotency per `(organization_id, idempotency_key)`
+- [x] Role check constraints: `admin`, `member`, `viewer`.
+- [x] Automated CLI commands: `npm run db:status`, `npm run db:migrate`, and guarded `ALLOW_DB_RESET=true npm run db:reset`.
+- [x] Hardened reset safeguards and test isolation (`packages/db/src/safety.ts`):
+  - `db:reset` rejects execution if `NODE_ENV` is unset or not `'development'`, or if `ALLOW_DB_RESET !== 'true'`.
+  - Production, staging, and remote database targets rejected even if forced.
+  - Dedicated test database isolation requires `_test` suffix and strictly refuses to run against application `DATABASE_URL`.
+  - Module-based resolution reliably loads root `.env` without requiring shell exports.
+- [x] 41 database tests (26 safety/guard tests + 15 schema/pgvector integration tests) in `@devdocs/db` passing cleanly.
+- [x] 58 total monorepo tests passing with zero failures.
+- [x] Zero regressions in existing Phase 1 checks: typecheck, lint, build, and tests passing across all packages.
 
 ---
 
 ## 3. Known Gaps & Deferred Items
 
 The following items are intentionally deferred to their respective phases:
-1. **PostgreSQL & pgvector Database**: No tables or schemas created yet (Phase 02).
-2. **Authentication & RBAC**: No JWT tokens or bcrypt user storage implemented yet (Phase 03).
-3. **Document Ingestion**: File uploads and PDF/Markdown parsers not yet attached (Phases 04-05).
-4. **Vector Search & Hybrid RAG**: OpenAI embedding generation and Groq LLM response generation not yet wired (Phases 06-08).
-5. **Background Worker & Redis**: BullMQ and worker process deferred until core RAG is operational (Phase 10).
+1. **Authentication & RBAC**: Password hashing (bcrypt) and JWT endpoints are scheduled for **Phase 03**.
+2. **Document Ingestion**: File upload processing and parsers are scheduled for **Phases 04-05**.
+3. **Vector Embeddings & LLM Generation**: OpenAI embedding calls and Groq chat completions are scheduled for **Phases 05-08**.
+4. **Background Worker & Queue**: BullMQ and Redis are scheduled for **Phase 10**.
 
 ---
 
 ## 4. Next Step
 
-The repository foundation is clean, strictly typed, and verified.
-**Status**: Ready for **Instruction 02 — Database Schema and Migrations**.
+The database layer and migration system are fully operational, tested against real pgvector operations, and strictly typed.
+**Status**: Ready for **Instruction 03 — Authentication, Organizations, and RBAC**.

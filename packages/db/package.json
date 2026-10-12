@@ -1,0 +1,46 @@
+{
+  "name": "@devdocs/db",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./src/index.ts"
+    },
+    "./migrator": {
+      "types": "./dist/migrator.d.ts",
+      "import": "./dist/migrator.js",
+      "default": "./src/migrator.ts"
+    },
+    "./safety": {
+      "types": "./dist/safety.d.ts",
+      "import": "./dist/safety.js",
+      "default": "./src/safety.ts"
+    }
+  },
+  "scripts": {
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "lint": "tsc --noEmit",
+    "test": "vitest run",
+    "migrate": "tsx src/cli.ts migrate",
+    "status": "tsx src/cli.ts status",
+    "reset": "tsx src/cli.ts reset",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@devdocs/shared": "*",
+    "dotenv": "^16.4.7",
+    "pg": "^8.13.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.4",
+    "@types/pg": "^8.11.11",
+    "tsx": "^4.19.3",
+    "typescript": "^5.7.3",
+    "vitest": "^5.0.4"
+  }
+}

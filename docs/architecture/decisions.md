@@ -110,3 +110,61 @@ This document records the architectural decisions, trade-offs, and rationale ado
 - **Rationale**:
   - Follows "avoid premature complexity" and PRD principle: build the end-to-end core before introducing distributed queuing complexity.
   - Keeps initial setup lightweight and cleanly testable.
+
+---
+
+## ADR-009: PostgreSQL with pgvector for Relational and Vector Storage
+
+- **Status**: Accepted
+- **Context**: The PRD requires a single primary data store for multi-tenant relational entities, document versioning, chat history, and dense vector embeddings.
+- **Decision**: Standardize on PostgreSQL with the `pgvector` extension enabled via `CREATE EXTENSION IF NOT EXISTS vector;`.
+- **Rationale**:
+  - Eliminates the operational complexity of running separate vector databases (e.g. Pinecone, Qdrant, Milvus).
+  - Unifies relational metadata filtering (tenant `organization_id`, document versions, access control) and vector similarity search in a single transactional query.
+  - Supported natively in containerized environments (`pgvector/pgvector:pg17`) and local installations (Postgres.app).
+
+---
+
+## ADR-010: Sequential SQL Migrations with schema_migrations Tracking
+
+- **Status**: Accepted
+- **Context**: The database schema must be deterministic, versioned, repeatable from scratch in automated testing, and inspectable without opaque ORM abstractions.
+- **Decision**: Use numbered SQL migration scripts (`001_enable_pgvector.sql`, `002_create_initial_schema.sql`) tracked via a dedicated `schema_migrations` table and executed with a custom transactional runner in `@devdocs/db`.
+- **Rationale**:
+  - Full control over specialized PostgreSQL features: `vector(1536)` types, `HNSW` vector indexes, and `tsvector` generated columns.
+  - Transactional atomicity: each migration runs within `BEGIN ... COMMIT` with automatic rollback on error.
+  - Zero proprietary ORM vendor lock-in; lightweight and reproducible across CI/CD and developer workstations.
+
+---
+
+## ADR-011: 1536-Dimensional Embeddings and HNSW Cosine Indexing
+
+- **Status**: Accepted
+- **Context**: Chunks must be embedded for semantic retrieval. The PRD specifies OpenAI `text-embedding-3-small` (1536 dimensions) as the baseline embedding model.
+- **Decision**: Define `chunks.embedding` as `vector(1536)` and build an HNSW index using cosine distance: `USING hnsw (embedding vector_cosine_ops)`.
+- **Rationale**:
+  - HNSW (Hierarchical Navigable Small World) provides superior query throughput and recall compared to IVFFlat for interactive search without requiring list training.
+  - Strict 1536 dimension typing prevents accidental ingestion of mismatched vector representations.
+
+---
+
+## ADR-012: PostgreSQL Full-Text Search via Stored Generated tsvector
+
+- **Status**: Accepted
+- **Context**: Hybrid search requires lexical retrieval for exact technical identifiers, function names, and error codes alongside semantic retrieval.
+- **Decision**: Add `chunks.search_vector` as a stored generated column: `tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED` backed by a GIN index: `USING GIN(search_vector)`.
+- **Rationale**:
+  - Automatic synchronization: whenever chunk content is inserted or updated, PostgreSQL automatically recalculates `search_vector`.
+  - GIN indexing ensures sub-millisecond lexical inverted-index queries using `@@ to_tsquery()`.
+
+---
+
+## ADR-013: Database Reset Safeguards and Strict Test Isolation
+
+- **Status**: Accepted
+- **Context**: `db:reset` drops the public schema and deletes all data. An accidental reset in production or running tests against the application database could result in catastrophic data loss.
+- **Decision**: Implement a defense-in-depth safety module (`@devdocs/db/safety`):
+  1. Manual development reset requires explicit `NODE_ENV=development` AND `ALLOW_DB_RESET=true`. It unconditionally refuses unset environments, staging, production, or remote database host targets.
+  2. Automated test suite reset uses a separate guarded path: requires `NODE_ENV='test'` (or Vitest), requires the target database name to end in `_test`, and explicitly rejects any target matching `DATABASE_URL` after parsing host, port, user, and database components.
+  3. All database targets are logged with credentials redacted.
+- **Rationale**: Prevents accidental data destruction from misconfigured environments, missing CLI arguments, or default fallbacks.

@@ -16,6 +16,9 @@
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",
     "test": "npm run test --workspaces --if-present",
+    "db:migrate": "npm run migrate -w @devdocs/db",
+    "db:status": "npm run status -w @devdocs/db",
+    "db:reset": "npm run reset -w @devdocs/db",
     "clean": "npm run clean --workspaces --if-present"
   },
   "devDependencies": {
