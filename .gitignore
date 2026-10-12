@@ -1,0 +1,23 @@
+# Keep planning documents and Antigravity prompts local
+/planning/
+
+# Node.js dependencies
+node_modules/
+**/node_modules/
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+
+# Build outputs
+dist/
+build/
+coverage/
+.next/
+.vite/
+.turbo/
+
+# Logs and operating system files
+*.log
+.DS_Store
