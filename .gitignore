@@ -18,6 +18,16 @@ coverage/
 .vite/
 .turbo/
 
+# Uploads and temporary files
+uploads/
+tmp/
+temp/
+*.tmp
+
+# Test coverage and reports
+.nyc_output/
+
 # Logs and operating system files
 *.log
+logs/
 .DS_Store

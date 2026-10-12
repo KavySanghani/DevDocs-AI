@@ -1,0 +1,30 @@
+{
+  "name": "devdocs-ai",
+  "version": "0.1.0",
+  "private": true,
+  "description": "DevDocs AI — Engineering Knowledge & Codebase Assistant",
+  "type": "module",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -k -p \"[{name}]\" -n \"api,web\" -c \"cyan,magenta\" \"npm run dev -w @devdocs/api\" \"npm run dev -w @devdocs/web\"",
+    "dev:api": "npm run dev -w @devdocs/api",
+    "dev:web": "npm run dev -w @devdocs/web",
+    "build": "npm run build --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "npm run lint --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present",
+    "clean": "npm run clean --workspaces --if-present"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2",
+    "typescript": "^5.7.3",
+    "vitest": "^5.0.4"
+  },
+  "engines": {
+    "node": ">=20.0.0",
+    "npm": ">=10.0.0"
+  }
+}
