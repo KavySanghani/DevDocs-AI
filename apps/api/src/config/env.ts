@@ -39,6 +39,13 @@ export const ApiEnvSchema = z
       .default('devdocs_dev_secret_key_32_characters_minimum!'),
     JWT_EXPIRES_IN: z.string().default('24h'),
 
+    // Document Ingestion Configuration (Phase 4)
+    MAX_FILE_SIZE_BYTES: z
+      .string()
+      .default('10485760')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+
     // Deferred Phase Placeholders
     OPENAI_API_KEY: z.string().optional(),
     GROQ_API_KEY: z.string().optional(),

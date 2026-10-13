@@ -17,6 +17,7 @@ import {
   removeOrganizationMember,
   updateMemberRole,
 } from '../services/organizationService.js';
+import { uploadAndProcessDocument } from '../services/documentService.js';
 
 interface OrgParams {
   orgId: string;
@@ -260,6 +261,32 @@ export async function organizationRoutes(app: FastifyInstance): Promise<void> {
     '/:orgId/documents',
     { preHandler: [requireOrgRole('member')] },
     async (request: FastifyRequest<{ Params: OrgParams }>, reply: FastifyReply) => {
+      if (request.isMultipart()) {
+        const uploadData = await request.file();
+        if (!uploadData) {
+          return reply.status(400).send({
+            error: {
+              code: 'MISSING_FILE',
+              message: 'No file provided in multipart upload.',
+              statusCode: 400,
+              requestId: request.id,
+            },
+          });
+        }
+        const buffer = await uploadData.toBuffer();
+        const fields = uploadData.fields as Record<string, { value?: string }>;
+        const customName = fields?.name?.value;
+        const doc = await uploadAndProcessDocument({
+          organizationId: request.params.orgId,
+          userId: request.user!.userId,
+          filename: uploadData.filename,
+          buffer,
+          declaredMimeType: uploadData.mimetype,
+          customName,
+        });
+        return reply.status(201).send({ document: doc });
+      }
+
       const parseResult = CreateDocRequestSchema.safeParse(request.body);
       if (!parseResult.success) {
         return reply.status(400).send({

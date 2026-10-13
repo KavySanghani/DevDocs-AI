@@ -118,18 +118,24 @@ Visit:
 
 ## Current Project Status & Limitations
 
-- **Current Phase**: **Instruction 02 — PostgreSQL Schema and Migrations (Completed)**.
+- **Current Phase**: **Instruction 04 — Document Upload and Parsing (Completed)**.
 - **Active Capabilities**:
-  - Fastify REST API with liveness/readiness health probes
+  - Fastify REST API with liveness/readiness health probes and structured logging
   - React frontend with live API connectivity diagnostics
   - 12 core relational tables with UUID primary keys and multi-tenant constraints
   - pgvector enabled with 1536-dim vector storage and HNSW cosine similarity search
   - Automated full-text search (`search_vector` generated column + GIN index)
   - Sequential SQL migration engine (`db:status`, `db:migrate`, `db:reset`)
+  - User registration, login, bcrypt hashing, JWT tokens with `jti` denylist revocation
+  - Multi-tenant organization workspaces with server-side RBAC (`Admin`, `Member`, `Viewer`)
+  - Document upload via multipart/form-data for PDF, Markdown, and TXT files
+  - Magic byte verification, path traversal sanitization, and SHA-256 deduplication
+  - Specialized parsers for PDF (pages & OCR detection), Markdown (sections & code blocks), and TXT
+  - Document version persistence with status tracking (`queued`, `processing`, `ready`, `failed`)
 - **Intentional Limitations (Scheduled for Later Phases)**:
-  - Authentication, password hashing & RBAC are scheduled for **Instruction 03**.
-  - Document parsing, chunking & OpenAI embeddings are scheduled for **Phases 04–05**.
-  - Hybrid RAG & Grounded Chat are scheduled for **Phases 06–08**.
+  - Token-based chunking & vector embedding generation are scheduled for **Phase 05**.
+  - Hybrid RAG retrieval, vector search & Grounded Chat are scheduled for **Phases 06–08**.
+  - Document re-indexing workflows are scheduled for **Phase 09**.
   - Redis / BullMQ async workers are scheduled for **Phase 10**.
 
 For full details, review [docs/project-status.md](docs/project-status.md).

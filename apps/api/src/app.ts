@@ -1,12 +1,14 @@
 import fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
 import rateLimit from '@fastify/rate-limit';
+import multipart from '@fastify/multipart';
 import { type ApiEnv, getEnv, setEnv } from './config/env.js';
 import { getLoggerOptions } from './config/logger.js';
 import { registerErrorHandler } from './plugins/errorHandler.js';
 import { healthRoutes } from './routes/health.js';
 import { authRoutes } from './routes/auth.js';
 import { organizationRoutes } from './routes/organizations.js';
+import { documentRoutes } from './routes/documents.js';
 
 export interface BuildAppOptions {
   env?: ApiEnv;
@@ -66,6 +68,14 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
     credentials: true,
   });
 
+  // Register Multipart File Uploads (Phase 4)
+  await app.register(multipart, {
+    limits: {
+      fileSize: env.MAX_FILE_SIZE_BYTES,
+      files: 1,
+    },
+  });
+
   // Register custom error handler
   registerErrorHandler(app);
 
@@ -74,6 +84,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(healthRoutes, { prefix: '/api' });
   await app.register(authRoutes, { prefix: '/api/auth' });
   await app.register(organizationRoutes, { prefix: '/api/organizations' });
+  await app.register(documentRoutes, { prefix: '/api/documents' });
 
   return app;
 }

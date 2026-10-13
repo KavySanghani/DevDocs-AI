@@ -153,3 +153,61 @@ export const UpdateMemberRoleRequestSchema = z.object({
   role: OrganizationRoleSchema,
 });
 export type UpdateMemberRoleRequest = z.infer<typeof UpdateMemberRoleRequestSchema>;
+
+// ==============================================================================
+// Document & Ingestion Schemas (Phase 4)
+// ==============================================================================
+
+export const DocumentSourceTypeSchema = z.enum(['pdf', 'markdown', 'text', 'github']);
+export type DocumentSourceType = z.infer<typeof DocumentSourceTypeSchema>;
+
+export const DocumentStatusSchema = z.enum(['queued', 'processing', 'ready', 'failed']);
+export type DocumentStatus = z.infer<typeof DocumentStatusSchema>;
+
+export const DocumentVersionSummarySchema = z.object({
+  id: z.string().uuid(),
+  versionNumber: z.number().int().positive(),
+  contentHash: z.string(),
+  status: DocumentStatusSchema,
+  errorMessage: z.string().nullable().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type DocumentVersionSummary = z.infer<typeof DocumentVersionSummarySchema>;
+
+export const DocumentResponseSchema = z.object({
+  id: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  createdBy: z.string().uuid().nullable().optional(),
+  name: z.string(),
+  sourceType: DocumentSourceTypeSchema,
+  currentVersionId: z.string().uuid().nullable().optional(),
+  status: DocumentStatusSchema,
+  currentVersion: DocumentVersionSummarySchema.optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type DocumentResponse = z.infer<typeof DocumentResponseSchema>;
+
+export const DocumentDetailResponseSchema = DocumentResponseSchema.extend({
+  sourceDetails: z
+    .object({
+      originalFilename: z.string().optional(),
+      mimeType: z.string().optional(),
+      fileSizeBytes: z.number().optional(),
+      characterCount: z.number().optional(),
+      wordCount: z.number().optional(),
+      pageCount: z.number().optional(),
+    })
+    .passthrough()
+    .optional(),
+});
+export type DocumentDetailResponse = z.infer<typeof DocumentDetailResponseSchema>;
+
+export const DocumentListQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  sourceType: DocumentSourceTypeSchema.optional(),
+  status: DocumentStatusSchema.optional(),
+});
+export type DocumentListQuery = z.infer<typeof DocumentListQuerySchema>;

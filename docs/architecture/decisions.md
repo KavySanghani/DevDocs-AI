@@ -190,3 +190,27 @@ This document records the architectural decisions, trade-offs, and rationale ado
   5. **Tenant Isolation & Non-Disclosure**:
      - Client-provided `organizationId` is never trusted without validating database membership for the authenticated user.
      - Cross-tenant access attempts return HTTP 404 (`ORGANIZATION_NOT_FOUND` / `RESOURCE_NOT_FOUND`) rather than 403, preventing unauthorized callers from enumerating the existence of external tenants or documents.
+
+---
+
+## ADR-015: In-Memory Document Staging, Parsing Pipeline, and Source Retention Strategy
+
+- **Status**: Accepted
+- **Context**: In Phase 4, documents (PDF, Markdown, TXT) must be uploaded via multipart/form-data, validated, parsed into structured representations (pages, sections, line numbers, word counts), and tracked with lifecycle processing status. Ephemeral container disks and local developer workstations may have strict storage constraints or lack persistent local file volumes.
+- **Decision**:
+  1. **In-Memory Streaming & Staging**: Fastify `@fastify/multipart` streams incoming file uploads directly into memory buffers strictly bounded by `MAX_FILE_SIZE_BYTES` (default 10MB). Temporary buffers are strictly scoped to the upload handler and garbage-collected immediately upon parse completion. No unmanaged temporary files are persisted to ephemeral container disks.
+  2. **Multi-Layer Validation**:
+     - Filename sanitization strips relative and absolute path traversal sequences (`../`, `..\`, leading `/`, null bytes) and normalizes POSIX and Windows path separators.
+     - Whitelisted extensions and MIME types (`.pdf` -> `application/pdf`, `.md`/`.markdown` -> `text/markdown`, `.txt` -> `text/plain`).
+     - Content verification checks magic bytes (`%PDF-` for PDF) and null-byte binary inspection for plain text and Markdown.
+  3. **Content Hashing & Tenant Deduplication**:
+     - Computes a deterministic SHA-256 hash across the raw uploaded payload.
+     - Queries existing documents in the target organization for matching content hash. If an identical document exists, upload is rejected with HTTP 409 `DUPLICATE_DOCUMENT` containing the existing document ID and status, preventing redundant parsing, chunking, and embedding costs.
+  4. **Structured Parsers**:
+     - **PDF**: Parsed page-by-page via `unpdf` (PDF.js-based). Text glyphs are extracted per page. PDFs containing zero extractable text (scanned / image-only) transition to `failed` status with an actionable `PROCESSING_ERROR` indicating OCR is required.
+     - **Markdown**: Parsed hierarchically, tracking heading levels (`#` through `######`), line start/end ranges, and verbatim preserving of code blocks (```) and lists.
+     - **Text**: Line-based normalization preserving whitespace, formatting, and character/word counts.
+  5. **Persistence & Source Retention**:
+     - Extracted document text, page structures, hierarchical sections, and metrics are persisted in the PostgreSQL `document_versions.source_details` JSONB column.
+     - The document lifecycle transitions across `queued` -> `processing` -> `ready` (or `failed` with error details upon malformed content), strictly adhering to the database `chk_doc_versions_status` constraint.
+     - Persisting structured parse results directly in PostgreSQL ensures that Phase 5 (Chunking & Embeddings) can reliably access clean page/section text without re-reading raw files or relying on ephemeral container storage.

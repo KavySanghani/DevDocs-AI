@@ -176,3 +176,46 @@ curl -s -X POST http://localhost:4000/api/auth/logout \
 curl -s http://localhost:4000/api/auth/me \
   -H "Authorization: Bearer $TOKEN" | jq
 ```
+
+---
+
+## 9. Manual Testing (Document Upload & Parsing)
+
+Test Phase 4 document upload, validation, parsing, and lifecycle endpoints using `curl`:
+
+```bash
+# 1. Login to get a valid token
+TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"Password123!"}' | jq -r .token)
+
+# 2. Get your organization ID
+ORG_ID=$(curl -s http://localhost:4000/api/organizations \
+  -H "Authorization: Bearer $TOKEN" | jq -r '.organizations[0].id')
+
+# 3. Upload a Markdown document (multipart/form-data)
+DOC=$(curl -s -X POST http://localhost:4000/api/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@README.md" \
+  -F "organizationId=$ORG_ID")
+echo "$DOC" | jq
+DOC_ID=$(echo "$DOC" | jq -r '.document.id')
+
+# 4. Duplicate upload attempt (returns 409 DUPLICATE_DOCUMENT with existing doc ID)
+curl -s -X POST http://localhost:4000/api/documents \
+  -H "Authorization: Bearer $TOKEN" \
+  -F "file=@README.md" \
+  -F "organizationId=$ORG_ID" | jq
+
+# 5. List organization documents with pagination and sorting
+curl -s "http://localhost:4000/api/documents?organizationId=$ORG_ID&limit=10&page=1" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 6. Retrieve document details (including version, pages, sections, and metrics)
+curl -s "http://localhost:4000/api/documents/$DOC_ID?organizationId=$ORG_ID" \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 7. Delete document (Admin only)
+curl -s -X DELETE "http://localhost:4000/api/documents/$DOC_ID?organizationId=$ORG_ID" \
+  -H "Authorization: Bearer $TOKEN" | jq
+```

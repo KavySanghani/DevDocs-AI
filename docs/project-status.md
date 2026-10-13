@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 03 Completion Checkpoint
+Last Updated: Phase 04 Completion Checkpoint
 
 ---
 
@@ -11,7 +11,7 @@ Last Updated: Phase 03 Completion Checkpoint
 | **01** | **Architecture and Bootstrap** | **COMPLETED** | Monorepo, Fastify 5 API, React 18 UI, Zod validation, Pino logging, tests passing |
 | **02** | **Database Schema & Migrations** | **COMPLETED** | PostgreSQL + pgvector 0.8+, 12 domain tables, sequential migrations, 15 integration tests |
 | **03** | **Auth, Organizations & RBAC** | **COMPLETED** | Bcrypt hashing, JWT + jti denylist revocation, multi-tenant RBAC (Admin/Member/Viewer), 100 monorepo tests passing |
-| 04 | Document Upload & Parsing | PENDING | Scheduled for Instruction 04 |
+| **04** | **Document Upload & Parsing** | **COMPLETED** | Multipart upload, PDF/Markdown/TXT parsers, magic bytes, path traversal sanitization, SHA-256 deduplication, 135 monorepo tests passing |
 | 05 | Chunking, Embeddings & Ingestion | PENDING | Scheduled for Instruction 05 |
 | 06 | Vector Search & Base RAG | PENDING | Scheduled for Instruction 06 |
 | 07 | Hybrid Retrieval & Rank Fusion | PENDING | Scheduled for Instruction 07 |
@@ -90,28 +90,57 @@ Last Updated: Phase 03 Completion Checkpoint
 - [x] Multi-Tenant Isolation & Non-Disclosure:
   - Database membership verified on all organization routes; client-supplied `organization_id` header or body parameters cannot bypass authorization.
   - Foreign organization access attempts return 404 `ORGANIZATION_NOT_FOUND` / `DOCUMENT_NOT_FOUND` to prevent attackers from discovering whether external tenants or resources exist.
-- [x] Test Coverage:
-  - 13 authentication tests in `apps/api/tests/auth.test.ts`.
-  - 26 RBAC and tenant isolation tests in `apps/api/tests/rbac.test.ts`.
-  - 44 database schema & reset safety tests in `packages/db/tests/`.
-  - 5 shared schema tests in `packages/shared/tests/`.
-  - 12 health & env tests in `apps/api/tests/`.
-  - **100 total monorepo tests passing** with zero failures.
-- [x] Zero dependency vulnerabilities (`npm audit` reporting 0 vulnerabilities).
-- [x] Full monorepo typecheck, build, and lint passing with exit code 0.
 
 ---
 
-## 4. Known Gaps & Deferred Items
+## 4. Phase 04 Verification & Evidence
 
-The following items are intentionally deferred to their respective phases:
-1. **Document Ingestion & File Upload**: File parsing, PDF/markdown extractors are scheduled for **Phases 04-05**.
-2. **Vector Embeddings & LLM Generation**: OpenAI embedding calls and Groq chat completions are scheduled for **Phases 05-08**.
-3. **Background Worker & Queue**: BullMQ and Redis are scheduled for **Phase 10**.
+### Criteria Verified
+- [x] Multi-format File Upload & Validation (`POST /api/documents` and `POST /api/organizations/:orgId/documents`):
+  - Streaming multipart/form-data ingestion via `@fastify/multipart` bounded by `MAX_FILE_SIZE_BYTES` (10MB default).
+  - Strict file extension and MIME type allowlist (`.pdf` -> `application/pdf`, `.md`/`.markdown` -> `text/markdown`, `.txt` -> `text/plain`).
+  - Filename sanitization protecting against directory traversal (`../`, `..\`, leading `/`, null bytes) across POSIX and Windows platforms.
+  - Deep content verification: PDF `%PDF-` magic byte inspection and null-byte binary probing for text/markdown formats.
+  - Empty files (`0` bytes) and oversized payloads (> 10MB) rejected with HTTP 400.
+- [x] Content Hash Deduplication:
+  - Deterministic SHA-256 hash calculated over raw file bytes.
+  - Duplicate file uploads within the same tenant rejected with HTTP 409 `DUPLICATE_DOCUMENT` containing the existing document ID and status, preventing redundant ingestion and embedding overhead.
+  - Cross-tenant identical files allowed and isolated per organization workspace.
+- [x] Domain-Specific Parsers:
+  - **PDF Parser**: Page-by-page extraction via `unpdf` with page counts and character counts. Scanned / image-only PDFs with zero extractable text are safely marked `failed` with an actionable `PROCESSING_ERROR` requiring OCR.
+  - **Markdown Parser**: Hierarchical AST extraction preserving heading levels (`h1`-`h6`), start/end line numbers, and literal fenced code blocks (` ``` `).
+  - **Plain Text Parser**: Preserves formatting, line counts, character counts, and word counts.
+- [x] Document Lifecycle & Metadata Persistence:
+  - Document status transitions: `queued` -> `processing` -> `ready` (or `failed` upon unextractable content), matching database CHECK constraints.
+  - Extracted raw text, page structures, hierarchical sections, and metrics persisted to PostgreSQL `document_versions.source_details` JSONB.
+  - Clean in-memory garbage collection; zero orphaned temporary files on disk.
+- [x] Tenant-Scoped Document Retrieval & Operations:
+  - `GET /api/documents`: Paginated, sorted list of documents for authorized members, filtered by tenant `organizationId`.
+  - `GET /api/documents/:id`: Full document details and latest version summary. Cross-tenant lookups return HTTP 404.
+  - `DELETE /api/documents/:id`: Admin-only deletion. Cascades through `document_versions` and associated records.
+- [x] Server-Side RBAC:
+  - `Admin`: Can upload, list, view, and delete documents.
+  - `Member`: Can upload, list, and view documents; rejected from deletion (403 `FORBIDDEN`).
+  - `Viewer`: Can list and view documents; rejected from upload and deletion (403 `FORBIDDEN`).
+- [x] Comprehensive Automated Tests:
+  - 15 parser and validation unit tests (`apps/api/tests/parsers.test.ts`).
+  - 20 document lifecycle, upload, deduplication, tenant isolation, and RBAC integration tests (`apps/api/tests/documents.test.ts`).
+  - **135 total monorepo tests passing** with zero failures across all packages.
+- [x] Zero dependency vulnerabilities (`npm audit` reports 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing cleanly with exit code 0.
 
 ---
 
-## 5. Next Step
+## 5. Known Gaps & Deferred Items
 
-Authentication, organization workspaces, and multi-tenant RBAC are fully implemented and verified.
-**Status**: Ready for **Instruction 04 — Document Upload & Parsing**.
+The following items are intentionally deferred to subsequent phases:
+1. **Chunking, Embeddings & Vector Ingestion**: Token-based chunking, OpenAI embeddings, and pgvector storage are scheduled for **Phase 05**.
+2. **Vector Search & Base RAG**: Cosine similarity queries and LLM generation scheduled for **Phases 06-08**.
+3. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+
+---
+
+## 6. Next Step
+
+Document upload, multi-layer validation, specialized parsing, SHA-256 deduplication, lifecycle status tracking, and RBAC enforcement are fully implemented and verified.
+**Status**: Ready for **Instruction 05 — Chunking, Embeddings & Ingestion**.
