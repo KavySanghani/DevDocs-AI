@@ -211,3 +211,53 @@ export const DocumentListQuerySchema = z.object({
   status: DocumentStatusSchema.optional(),
 });
 export type DocumentListQuery = z.infer<typeof DocumentListQuerySchema>;
+
+// ==============================================================================
+// Chunking, Embeddings & Ingestion Schemas (Phase 5)
+// ==============================================================================
+
+export const ChunkResponseSchema = z.object({
+  id: z.string().uuid(),
+  documentVersionId: z.string().uuid(),
+  chunkIndex: z.number().int().min(0),
+  content: z.string(),
+  tokenCount: z.number().int().nullable().optional(),
+  characterCount: z.number().int(),
+  pageNumber: z.number().int().nullable().optional(),
+  sectionTitle: z.string().nullable().optional(),
+  filePath: z.string().nullable().optional(),
+  lineStart: z.number().int().nullable().optional(),
+  lineEnd: z.number().int().nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.string(),
+});
+export type ChunkResponse = z.infer<typeof ChunkResponseSchema>;
+
+export const ChunkListResponseSchema = z.object({
+  chunks: z.array(ChunkResponseSchema),
+  total: z.number().int().min(0),
+  page: z.number().int().min(1),
+  limit: z.number().int().min(1),
+  totalPages: z.number().int().min(1),
+});
+export type ChunkListResponse = z.infer<typeof ChunkListResponseSchema>;
+
+export const ChunkingConfigSchema = z.object({
+  maxChunkSizeChars: z.number().int().positive().default(800),
+  chunkOverlapChars: z.number().int().min(0).default(120),
+  minChunkSizeChars: z.number().int().positive().default(50),
+});
+export type ChunkingConfig = z.infer<typeof ChunkingConfigSchema>;
+
+export const IngestionResultSchema = z.object({
+  documentId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  status: DocumentStatusSchema,
+  chunkCount: z.number().int().min(0),
+  totalCharacters: z.number().int().min(0),
+  totalEstimatedTokens: z.number().int().min(0),
+  embeddingModel: z.string(),
+  durationMs: z.number().int().min(0),
+  errorMessage: z.string().nullable().optional(),
+});
+export type IngestionResult = z.infer<typeof IngestionResultSchema>;

@@ -9,6 +9,7 @@ import type {
 import { parseDocument, ParseError } from './parsers/index.js';
 import { validateDocumentFile } from './documentValidation.js';
 import { getOrganizationMember } from './organizationService.js';
+import { ingestDocumentVersion } from './ingestion/index.js';
 
 export class DocError extends Error {
   constructor(
@@ -185,7 +186,7 @@ export async function uploadAndProcessDocument(
       sections: parseResult.sections ?? [],
       metadata: parseResult.metadata ?? {},
     };
-    finalStatus = 'ready';
+    finalStatus = 'processing';
   } catch (err) {
     finalStatus = 'failed';
     if (err instanceof ParseError) {
@@ -207,6 +208,31 @@ export async function uploadAndProcessDocument(
      WHERE id = $4`,
     [finalStatus, errorMessage, JSON.stringify(sourceDetailsPayload), version.id]
   );
+
+  // 6. If parsing succeeded, run the ingestion pipeline (chunking + embeddings + vector storage)
+  if (finalStatus === 'processing') {
+    try {
+      const ingestRes = await ingestDocumentVersion({
+        documentId: doc.id,
+        documentVersionId: version.id,
+        organizationId: doc.organization_id,
+      });
+
+      finalStatus = 'ready';
+      errorMessage = null;
+      sourceDetailsPayload = {
+        ...sourceDetailsPayload,
+        chunkCount: ingestRes.chunkCount,
+        totalCharacters: ingestRes.totalCharacters,
+        totalEstimatedTokens: ingestRes.totalEstimatedTokens,
+        embeddingModel: ingestRes.embeddingModel,
+      };
+    } catch (ingestErr) {
+      finalStatus = 'failed';
+      errorMessage =
+        ingestErr instanceof Error ? ingestErr.message : 'Document ingestion pipeline failed';
+    }
+  }
 
   const versionSummary: DocumentVersionSummary = {
     id: version.id,
@@ -234,6 +260,7 @@ export async function uploadAndProcessDocument(
       characterCount: sourceDetailsPayload.characterCount as number | undefined,
       wordCount: sourceDetailsPayload.wordCount as number | undefined,
       pageCount: sourceDetailsPayload.pageCount as number | undefined,
+      chunkCount: sourceDetailsPayload.chunkCount as number | undefined,
     },
     createdAt: doc.created_at.toISOString(),
     updatedAt: new Date().toISOString(),
@@ -384,6 +411,7 @@ export async function getDocumentById(
       characterCount: sourceDetails.characterCount as number | undefined,
       wordCount: sourceDetails.wordCount as number | undefined,
       pageCount: sourceDetails.pageCount as number | undefined,
+      chunkCount: sourceDetails.chunkCount as number | undefined,
     },
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),

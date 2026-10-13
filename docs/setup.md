@@ -31,6 +31,15 @@ This guide covers setting up your local development environment for DevDocs AI.
    - `DATABASE_URL`: PostgreSQL connection string (e.g. `postgresql://localhost:5433/devdocs_ai`)
    - `TEST_DATABASE_URL`: Test database connection string (e.g. `postgresql://localhost:5433/devdocs_ai_test`)
    - `JWT_SECRET`: Secret key for signing JWT access tokens (minimum 32 characters in production)
+   - `MAX_FILE_SIZE_BYTES`: Maximum document upload size in bytes (default: `10485760` = 10MB)
+   - `EMBEDDING_PROVIDER`: Embedding provider adapter (`openai` or `mock`, default: `openai`)
+   - `OPENAI_API_KEY`: OpenAI API key (required when `EMBEDDING_PROVIDER=openai`)
+   - `OPENAI_EMBEDDING_MODEL`: Embedding model name (default: `text-embedding-3-small`)
+   - `EMBEDDING_DIMENSIONS`: Output vector dimensions (default: `1536`)
+   - `CHUNK_SIZE_CHARS`: Chunking target size in characters (default: `800`)
+   - `CHUNK_OVERLAP_CHARS`: Overlap between adjacent chunks in characters (default: `120`)
+   - `EMBEDDING_BATCH_SIZE`: Batch size for embedding API calls (default: `100`)
+   - `EMBEDDING_TIMEOUT_MS`: Embeddings request timeout in milliseconds (default: `30000`)
 
 ---
 

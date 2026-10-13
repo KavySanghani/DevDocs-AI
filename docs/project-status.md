@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 04 Completion Checkpoint
+Last Updated: Phase 05 Completion Checkpoint
 
 ---
 
@@ -12,7 +12,7 @@ Last Updated: Phase 04 Completion Checkpoint
 | **02** | **Database Schema & Migrations** | **COMPLETED** | PostgreSQL + pgvector 0.8+, 12 domain tables, sequential migrations, 15 integration tests |
 | **03** | **Auth, Organizations & RBAC** | **COMPLETED** | Bcrypt hashing, JWT + jti denylist revocation, multi-tenant RBAC (Admin/Member/Viewer), 100 monorepo tests passing |
 | **04** | **Document Upload & Parsing** | **COMPLETED** | Multipart upload, PDF/Markdown/TXT parsers, magic bytes, path traversal sanitization, SHA-256 deduplication, 135 monorepo tests passing |
-| 05 | Chunking, Embeddings & Ingestion | PENDING | Scheduled for Instruction 05 |
+| **05** | **Chunking, Embeddings & Ingestion** | **COMPLETED** | Structure-aware normalizer & chunker, native fetch OpenAI embeddings (1536d), pgvector transactional storage, 155 monorepo tests passing |
 | 06 | Vector Search & Base RAG | PENDING | Scheduled for Instruction 06 |
 | 07 | Hybrid Retrieval & Rank Fusion | PENDING | Scheduled for Instruction 07 |
 | 08 | Grounded Chat & Citations | PENDING | Scheduled for Instruction 08 |
@@ -131,16 +131,63 @@ Last Updated: Phase 04 Completion Checkpoint
 
 ---
 
-## 5. Known Gaps & Deferred Items
+## 5. Phase 05 Verification & Evidence
+
+### Criteria Verified
+- [x] Structure-Preserving Normalizer & Cleaner:
+  - Normalizes line breaks to LF (`\n`), strips dangerous ASCII control characters while preserving `\t` and `\n`.
+  - Standardizes typographical quotes and dashes.
+  - Cleans trailing whitespace per line while preserving indentation for code blocks and lists.
+  - Compresses excessive blank lines while preserving paragraph separations.
+  - Throws typed `IngestionError` (stage `normalization`) on empty or whitespace-only inputs.
+- [x] Structure-Aware Chunking:
+  - **Markdown**: Heading-aware section hierarchy (`H1` through `H6`), tracking section title, heading level, line start/end numbers, and preserving code blocks intact.
+  - **PDF**: Preserves page boundaries and numbers (`page_number`), generating sub-chunks with configured overlap when page length exceeds chunk size.
+  - **Plain Text**: Slices on paragraph breaks (`\n\n`), falling back to sentence and word boundaries for oversized blocks.
+  - Configurable defaults: 800 character chunk size, 120 character overlap, 50 minimum character size.
+  - Deterministic 0-based indexing (`chunk_index = 0, 1, 2, ...`). Identical inputs produce strictly identical chunks.
+- [x] Embedding Provider Abstraction & Adapters:
+  - `EmbeddingProvider` interface with `model`, `dimensions`, and `embedChunks(texts: string[])`.
+  - `MockEmbeddingProvider`: Produces deterministic 1536-dimensional L2-normalized unit vectors seeded by SHA-256 content hashes; supports error and dimension simulation for tests.
+  - `OpenAIEmbeddingProvider`: Built using native Node 22 `fetch` and `AbortSignal.timeout` with zero additional npm dependencies.
+    - Default model `text-embedding-3-small`, standard output 1536 dimensions.
+    - Input batching according to configured batch size (default: 100).
+    - Strict validation: exact dimensionality (1536) and finite numeric values (`Number.isFinite`).
+    - Redacts sensitive secrets (`sk-...`, Bearer tokens) from error messages before propagation.
+    - Opt-in live smoke test clearly labeled and skipped when live API key is unset.
+- [x] Transactional pgvector Persistence:
+  - Chunks, metadata, and 1536-dimensional vectors persisted to PostgreSQL `chunks` table inside `withTransaction`.
+  - Parameterized vector format `[x,y,...]::vector`.
+  - Generated tsvector `search_vector` column populated automatically by PostgreSQL.
+  - Idempotent re-ingestion: existing chunks for the target version are safely removed and replaced within the transaction.
+- [x] Lifecycle & Finalization:
+  - Successful ingestion transitions document version to `ready`, updating `source_details` with `chunkCount`, `totalCharacters`, `totalEstimatedTokens`, `embeddingModel`, `embeddingDimensions`, and `ingestedAt`.
+  - Ingestion failure transitions document version to `failed`, recording `errorStage` and sanitized error message. Partial chunks are never committed.
+- [x] Transport-Independent Pipeline & API Endpoints:
+  - Purely functional `ingestDocumentVersion` service callable from upload handler or async workers.
+  - `GET /api/documents/:id/chunks`: Paginated chunk listing with `page`, `limit`, `total`, `totalPages`, and tenant isolation.
+  - `POST /api/documents/:id/ingest`: Re-ingestion endpoint with RBAC (Admin & Member allowed, Viewer rejected with 403).
+  - Auto-ingestion triggered on document upload.
+- [x] Comprehensive Automated Tests:
+  - 12 normalization, chunking, and token estimation tests (`apps/api/tests/chunking.test.ts`).
+  - 14 embedding provider, adapter boundary, validation, and error redaction tests (`apps/api/tests/embeddings.test.ts`).
+  - 8 end-to-end ingestion, pgvector storage, cosine similarity queries, chunk pagination, and failure rollback tests (`apps/api/tests/ingestion.test.ts`).
+  - **154 total monorepo tests passing** with zero failures across all packages.
+- [x] Zero dependency vulnerabilities (`npm audit` reports 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing cleanly with exit code 0.
+
+---
+
+## 6. Known Gaps & Deferred Items
 
 The following items are intentionally deferred to subsequent phases:
-1. **Chunking, Embeddings & Vector Ingestion**: Token-based chunking, OpenAI embeddings, and pgvector storage are scheduled for **Phase 05**.
-2. **Vector Search & Base RAG**: Cosine similarity queries and LLM generation scheduled for **Phases 06-08**.
+1. **Vector Search & Base RAG**: Cosine similarity queries and LLM generation scheduled for **Phases 06-08**.
+2. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
 3. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
 
 ---
 
-## 6. Next Step
+## 7. Next Step
 
-Document upload, multi-layer validation, specialized parsing, SHA-256 deduplication, lifecycle status tracking, and RBAC enforcement are fully implemented and verified.
-**Status**: Ready for **Instruction 05 — Chunking, Embeddings & Ingestion**.
+Chunking, OpenAI embedding generation, pgvector persistence, chunk retrieval endpoints, and failure semantics are fully implemented and verified.
+**Status**: Ready for **Instruction 06 — Vector Search & Base RAG**.

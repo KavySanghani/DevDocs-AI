@@ -46,7 +46,36 @@ export const ApiEnvSchema = z
       .transform((val) => parseInt(val, 10))
       .pipe(z.number().int().positive()),
 
-    // Deferred Phase Placeholders
+    // Chunking & Embedding Pipeline (Phase 5)
+    EMBEDDING_PROVIDER: z.enum(['openai', 'mock']).default('openai'),
+    OPENAI_EMBEDDING_MODEL: z.string().default('text-embedding-3-small'),
+    EMBEDDING_DIMENSIONS: z
+      .string()
+      .default('1536')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    CHUNK_SIZE_CHARS: z
+      .string()
+      .default('800')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    CHUNK_OVERLAP_CHARS: z
+      .string()
+      .default('120')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().min(0)),
+    EMBEDDING_BATCH_SIZE: z
+      .string()
+      .default('100')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    EMBEDDING_TIMEOUT_MS: z
+      .string()
+      .default('30000')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+
+    // External Provider Keys & Deferred Infrastructure
     OPENAI_API_KEY: z.string().optional(),
     GROQ_API_KEY: z.string().optional(),
     REDIS_URL: z.string().optional(),
@@ -63,6 +92,15 @@ export const ApiEnvSchema = z
           message:
             'JWT_SECRET must be set to a secure custom secret with at least 32 characters in production.',
           path: ['JWT_SECRET'],
+        });
+      }
+
+      if (data.EMBEDDING_PROVIDER === 'openai' && (!data.OPENAI_API_KEY || data.OPENAI_API_KEY.trim() === '')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'OPENAI_API_KEY is required in production when EMBEDDING_PROVIDER is set to "openai".',
+          path: ['OPENAI_API_KEY'],
         });
       }
     }

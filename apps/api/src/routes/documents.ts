@@ -14,6 +14,11 @@ import {
   uploadAndProcessDocument,
 } from '../services/documentService.js';
 import { ValidationError } from '../services/documentValidation.js';
+import {
+  getPersistedChunks,
+  ingestDocumentVersion,
+  IngestionError,
+} from '../services/ingestion/index.js';
 
 interface DocParams {
   id: string;
@@ -266,6 +271,146 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
             code: err.code,
             message: err.message,
             statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // GET /:id/chunks - Get paginated chunks for a document
+  app.get<{
+    Params: DocParams;
+    Querystring: { page?: string; limit?: string; versionId?: string };
+  }>('/:id/chunks', async (request, reply) => {
+    try {
+      const doc = await getDocumentById(request.params.id, request.user!.userId);
+      const versionId = request.query.versionId || doc.currentVersionId;
+
+      if (!versionId) {
+        return reply.status(200).send({
+          chunks: [],
+          total: 0,
+          page: 1,
+          limit: 20,
+          totalPages: 1,
+        });
+      }
+
+      const page = request.query.page ? parseInt(request.query.page, 10) : 1;
+      const limit = request.query.limit ? parseInt(request.query.limit, 10) : 20;
+
+      const result = await getPersistedChunks({
+        documentVersionId: versionId,
+        organizationId: doc.organizationId,
+        page: isNaN(page) ? 1 : page,
+        limit: isNaN(limit) ? 20 : limit,
+      });
+
+      return reply.status(200).send({
+        chunks: result.chunks.map((c) => ({
+          id: c.id,
+          documentVersionId: c.document_version_id,
+          chunkIndex: c.chunk_index,
+          content: c.content,
+          tokenCount: c.token_count,
+          characterCount: c.character_count,
+          pageNumber: c.page_number,
+          sectionTitle: c.section_title,
+          filePath: c.file_path,
+          lineStart: c.line_start,
+          lineEnd: c.line_end,
+          metadata: c.metadata,
+          createdAt: c.created_at.toISOString(),
+        })),
+        total: result.total,
+        page: result.page,
+        limit: result.limit,
+        totalPages: result.totalPages,
+      });
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/ingest - Trigger or re-run ingestion for a document
+  app.post<{
+    Params: DocParams;
+    Body: {
+      versionId?: string;
+      config?: {
+        maxChunkSizeChars?: number;
+        chunkOverlapChars?: number;
+        minChunkSizeChars?: number;
+      };
+    };
+  }>('/:id/ingest', async (request, reply) => {
+    try {
+      const doc = await getDocumentById(request.params.id, request.user!.userId);
+
+      const member = await getOrganizationMember(doc.organizationId, request.user!.userId);
+      if (!member || !hasMinimumRole(member.role, 'member')) {
+        return reply.status(403).send({
+          error: {
+            code: 'FORBIDDEN',
+            message: 'Forbidden: Member role or higher is required to ingest documents.',
+            statusCode: 403,
+            requestId: request.id,
+          },
+        });
+      }
+
+      const versionId = request.body?.versionId || doc.currentVersionId;
+      if (!versionId) {
+        return reply.status(400).send({
+          error: {
+            code: 'NO_DOCUMENT_VERSION',
+            message: 'Document has no active version to ingest.',
+            statusCode: 400,
+            requestId: request.id,
+          },
+        });
+      }
+
+      const result = await ingestDocumentVersion({
+        documentId: doc.id,
+        documentVersionId: versionId,
+        organizationId: doc.organizationId,
+        ...(request.body?.config ? { config: request.body.config } : {}),
+      });
+
+      return reply.status(200).send({
+        ingestion: result,
+      });
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof IngestionError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: 'INGESTION_FAILED',
+            message: err.message,
+            statusCode: err.statusCode,
+            stage: err.stage,
             requestId: request.id,
           },
         });

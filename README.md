@@ -118,7 +118,7 @@ Visit:
 
 ## Current Project Status & Limitations
 
-- **Current Phase**: **Instruction 04 — Document Upload and Parsing (Completed)**.
+- **Current Phase**: **Instruction 05 — Chunking, Embeddings & Ingestion (Completed)**.
 - **Active Capabilities**:
   - Fastify REST API with liveness/readiness health probes and structured logging
   - React frontend with live API connectivity diagnostics
@@ -132,10 +132,15 @@ Visit:
   - Magic byte verification, path traversal sanitization, and SHA-256 deduplication
   - Specialized parsers for PDF (pages & OCR detection), Markdown (sections & code blocks), and TXT
   - Document version persistence with status tracking (`queued`, `processing`, `ready`, `failed`)
+  - Structure-preserving text normalizer and cleaner
+  - Structure-aware chunking preserving Markdown headings, code blocks, and PDF page boundaries
+  - EmbeddingProvider abstraction with zero-dependency Node 22 native fetch OpenAI implementation (`text-embedding-3-small`, 1536d) and deterministic MockEmbeddingProvider
+  - Input batching, strict dimension validation, finite number verification, and API key redaction
+  - Transactional chunk and pgvector embedding persistence with automatic rollback on error
+  - Document chunk pagination endpoint (`GET /api/documents/:id/chunks`) and re-ingestion endpoint (`POST /api/documents/:id/ingest`)
 - **Intentional Limitations (Scheduled for Later Phases)**:
-  - Token-based chunking & vector embedding generation are scheduled for **Phase 05**.
   - Hybrid RAG retrieval, vector search & Grounded Chat are scheduled for **Phases 06–08**.
-  - Document re-indexing workflows are scheduled for **Phase 09**.
+  - Document versions and re-indexing comparison workflows are scheduled for **Phase 09**.
   - Redis / BullMQ async workers are scheduled for **Phase 10**.
 
 For full details, review [docs/project-status.md](docs/project-status.md).

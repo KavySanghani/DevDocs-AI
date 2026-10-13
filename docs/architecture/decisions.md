@@ -214,3 +214,36 @@ This document records the architectural decisions, trade-offs, and rationale ado
      - Extracted document text, page structures, hierarchical sections, and metrics are persisted in the PostgreSQL `document_versions.source_details` JSONB column.
      - The document lifecycle transitions across `queued` -> `processing` -> `ready` (or `failed` with error details upon malformed content), strictly adhering to the database `chk_doc_versions_status` constraint.
      - Persisting structured parse results directly in PostgreSQL ensures that Phase 5 (Chunking & Embeddings) can reliably access clean page/section text without re-reading raw files or relying on ephemeral container storage.
+
+---
+
+## ADR-016: Structure-Aware Chunking, Native Fetch OpenAI Embedding Provider & pgvector Persistence Pipeline
+
+- **Status**: Accepted
+- **Context**: In Phase 5, extracted document text must be converted into high-quality searchable chunks, embedded via OpenAI text embeddings (`text-embedding-3-small`, 1536 dimensions), and persisted atomically into PostgreSQL pgvector for semantic retrieval. Ephemeral container disks and local environments require zero unnecessary third-party package dependencies, secret redaction, and deterministic reproducibility in tests without incurring real API costs.
+- **Decision**:
+  1. **Validation & Structure-Preserving Normalization**:
+     - Raw extracted text is validated for non-emptiness from `document_versions.source_details.rawText`.
+     - Line endings are normalized to standard LF (`\n`). Dangerous ASCII control characters are stripped while preserving tabs (`\t`) and newlines (`\n`). Typographical quotes and dashes are standardized.
+     - Trailing whitespace is trimmed per line while preserving leading whitespace to maintain code block and list indentations.
+  2. **Structure-Aware Chunking Engine**:
+     - **Markdown**: Extracts headings hierarchically (`H1` through `H6`), tracking section title, heading level, and line start/end numbers. Fenced code blocks are kept intact within single chunks wherever possible.
+     - **PDF**: Preserves page boundaries and numbers (`page_number`), generating sub-chunks with configured overlap when page length exceeds chunk size.
+     - **Plain Text**: Slices on paragraph breaks (`\n\n`), falling back to sentence and word boundaries for oversized blocks.
+     - **Configurable Defaults**: Default chunk size of 800 characters, overlap of 120 characters, and minimum chunk size of 50 characters. Tiny fragments are merged into adjacent chunks within the same section.
+     - **Deterministic Chunk Ordering**: Slices are assigned sequential 0-based indices (`chunk_index = 0, 1, 2, ...`). The output is strictly deterministic across repeated runs on identical content.
+  3. **EmbeddingProvider Abstraction & Zero-Dependency OpenAI Adapter**:
+     - `EmbeddingProvider` interface defines `model`, `dimensions`, and `embedChunks(texts: string[]): Promise<number[][]>`.
+     - `OpenAIEmbeddingProvider` utilizes native Node 22 `fetch` and `AbortSignal.timeout` with zero extra npm packages.
+       - Batches chunk inputs (default batch size: 100) to respect provider payload limits.
+       - Validates returned vectors for exact dimensionality (1536) and finite numeric values (`Number.isFinite`).
+       - Redacts API keys (`sk-...`) and Bearer tokens from error strings before propagation.
+     - `MockEmbeddingProvider` generates deterministic 1536-dimensional L2-normalized unit vectors based on SHA-256 content hashing, enabling cosine distance searches (`<=>`) in offline integration tests without live OpenAI credentials.
+  4. **Transactional pgvector Chunk Persistence**:
+     - Chunks and embeddings are stored in PostgreSQL `chunks` table using `withTransaction`.
+     - Embeddings are parameterized as pgvector literal string format `[x,y,...]::vector`.
+     - The `search_vector` tsvector column is populated automatically by PostgreSQL stored generated expressions.
+     - Re-ingestion is idempotent: pre-existing chunks for the document version are cleared within the transaction prior to re-inserting.
+  5. **Failure Semantics & Transport Independence**:
+     - If any pipeline stage fails (validation, normalization, chunking, embedding, persistence), the document version transitions to `failed` status, recording `errorStage` and a sanitized `error_message` in `source_details`. Partial chunks are rolled back atomically.
+     - The ingestion pipeline is purely functional and transport-independent (`ingestDocumentVersion`), callable synchronously from the document upload handler or asynchronously from future worker queues without duplicating logic.
