@@ -118,7 +118,7 @@ Visit:
 
 ## Current Project Status & Limitations
 
-- **Current Phase**: **Instruction 05 — Chunking, Embeddings & Ingestion (Completed)**.
+- **Current Phase**: **Instruction 06 — Vector Search & Base RAG (Completed)**.
 - **Active Capabilities**:
   - Fastify REST API with liveness/readiness health probes and structured logging
   - React frontend with live API connectivity diagnostics
@@ -138,8 +138,17 @@ Visit:
   - Input batching, strict dimension validation, finite number verification, and API key redaction
   - Transactional chunk and pgvector embedding persistence with automatic rollback on error
   - Document chunk pagination endpoint (`GET /api/documents/:id/chunks`) and re-ingestion endpoint (`POST /api/documents/:id/ingest`)
+  - Semantic vector retrieval using pgvector cosine distance (`<=>`) over HNSW indexing
+  - Parameterized multi-tenant query scoping ensuring zero cross-tenant candidate leakage
+  - Granular latency breakdowns separating embedding, database retrieval, and generation durations
+  - Anti-prompt-injection system prompt establishing strict grounding and instruction hierarchy
+  - Deterministic context budgeting (`maxContextChars`) with delimited source chunk provenance
+  - Groq LLM Provider adapter (`llama-3.3-70b-versatile`) with timeout protection and secret redaction
+  - Semantic search endpoints (`POST /api/organizations/:orgId/search`, `POST /api/documents/:id/search`)
+  - Grounded RAG query endpoints (`POST /api/organizations/:orgId/query`, `POST /api/documents/:id/query`)
 - **Intentional Limitations (Scheduled for Later Phases)**:
-  - Hybrid RAG retrieval, vector search & Grounded Chat are scheduled for **Phases 06–08**.
+  - Hybrid lexical search (tsvector/GIN) combined with vector search via RRF is scheduled for **Phase 07**.
+  - Multi-turn chat sessions and citation validation against chunk IDs are scheduled for **Phase 08**.
   - Document versions and re-indexing comparison workflows are scheduled for **Phase 09**.
   - Redis / BullMQ async workers are scheduled for **Phase 10**.
 

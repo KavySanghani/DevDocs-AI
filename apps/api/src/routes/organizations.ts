@@ -5,6 +5,8 @@ import {
   AddMemberRequestSchema,
   CreateOrganizationRequestSchema,
   UpdateMemberRoleRequestSchema,
+  VectorSearchRequestSchema,
+  RAGQueryRequestSchema,
 } from '@devdocs/shared';
 import { authenticate, requireOrgRole } from '../middleware/auth.js';
 import {
@@ -18,6 +20,8 @@ import {
   updateMemberRole,
 } from '../services/organizationService.js';
 import { uploadAndProcessDocument } from '../services/documentService.js';
+import { searchSimilarChunks, RetrievalError } from '../services/retrieval/index.js';
+import { queryRAG, LLMError } from '../services/generation/index.js';
 
 interface OrgParams {
   orgId: string;
@@ -385,5 +389,119 @@ export async function organizationRoutes(app: FastifyInstance): Promise<void> {
 
       return reply.status(200).send({ success: true, message: 'Document deleted successfully' });
     }
+  );
+
+  // POST /:orgId/search & POST /:orgId/retrieval/vector - Semantic vector search
+  const handleVectorSearch = async (
+    request: FastifyRequest<{ Params: OrgParams }>,
+    reply: FastifyReply
+  ) => {
+    const parseResult = VectorSearchRequestSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid vector search parameters',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    try {
+      const result = await searchSimilarChunks({
+        organizationId: request.params.orgId,
+        ...parseResult.data,
+      });
+
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof RetrievalError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
+  app.post<{ Params: OrgParams }>(
+    '/:orgId/search',
+    { preHandler: [requireOrgRole('viewer')] },
+    handleVectorSearch
+  );
+
+  app.post<{ Params: OrgParams }>(
+    '/:orgId/retrieval/vector',
+    { preHandler: [requireOrgRole('viewer')] },
+    handleVectorSearch
+  );
+
+  // POST /:orgId/query & POST /:orgId/rag/query - Grounded RAG query
+  const handleRAGQuery = async (
+    request: FastifyRequest<{ Params: OrgParams }>,
+    reply: FastifyReply
+  ) => {
+    const parseResult = RAGQueryRequestSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid RAG query parameters',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    try {
+      const result = await queryRAG({
+        organizationId: request.params.orgId,
+        ...parseResult.data,
+      });
+
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof RetrievalError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof LLMError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
+  app.post<{ Params: OrgParams }>(
+    '/:orgId/query',
+    { preHandler: [requireOrgRole('viewer')] },
+    handleRAGQuery
+  );
+
+  app.post<{ Params: OrgParams }>(
+    '/:orgId/rag/query',
+    { preHandler: [requireOrgRole('viewer')] },
+    handleRAGQuery
   );
 }

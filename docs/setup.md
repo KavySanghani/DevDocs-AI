@@ -40,6 +40,12 @@ This guide covers setting up your local development environment for DevDocs AI.
    - `CHUNK_OVERLAP_CHARS`: Overlap between adjacent chunks in characters (default: `120`)
    - `EMBEDDING_BATCH_SIZE`: Batch size for embedding API calls (default: `100`)
    - `EMBEDDING_TIMEOUT_MS`: Embeddings request timeout in milliseconds (default: `30000`)
+   - `LLM_PROVIDER`: LLM generation provider adapter (`groq` or `mock`, default: `groq`)
+   - `GROQ_API_KEY`: Groq API key for answer generation (required in production when `LLM_PROVIDER=groq`)
+   - `GROQ_MODEL`: Groq generation model (default: `llama-3.3-70b-versatile`)
+   - `GROQ_TIMEOUT_MS`: Groq request timeout in milliseconds (default: `30000`)
+   - `RAG_MAX_CONTEXT_CHARS`: Maximum context character budget for RAG prompt (default: `12000`)
+   - `RAG_MAX_TOP_K`: Maximum retrieval candidates upper bound (default: `20`)
 
 ---
 

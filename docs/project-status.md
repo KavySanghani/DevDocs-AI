@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 05 Completion Checkpoint
+Last Updated: Phase 06 Completion Checkpoint
 
 ---
 
@@ -13,7 +13,7 @@ Last Updated: Phase 05 Completion Checkpoint
 | **03** | **Auth, Organizations & RBAC** | **COMPLETED** | Bcrypt hashing, JWT + jti denylist revocation, multi-tenant RBAC (Admin/Member/Viewer), 100 monorepo tests passing |
 | **04** | **Document Upload & Parsing** | **COMPLETED** | Multipart upload, PDF/Markdown/TXT parsers, magic bytes, path traversal sanitization, SHA-256 deduplication, 135 monorepo tests passing |
 | **05** | **Chunking, Embeddings & Ingestion** | **COMPLETED** | Structure-aware normalizer & chunker, native fetch OpenAI embeddings (1536d), pgvector transactional storage, 155 monorepo tests passing |
-| 06 | Vector Search & Base RAG | PENDING | Scheduled for Instruction 06 |
+| **06** | **Vector Search & Base RAG** | **COMPLETED** | pgvector cosine similarity retrieval, HNSW indexing, bounded context Groq LLM RAG, 186 monorepo tests passing |
 | 07 | Hybrid Retrieval & Rank Fusion | PENDING | Scheduled for Instruction 07 |
 | 08 | Grounded Chat & Citations | PENDING | Scheduled for Instruction 08 |
 | 09 | Document Versions & Reindex | PENDING | Scheduled for Instruction 09 |
@@ -178,16 +178,54 @@ Last Updated: Phase 05 Completion Checkpoint
 
 ---
 
-## 6. Known Gaps & Deferred Items
+## 6. Phase 06 Verification & Evidence
 
-The following items are intentionally deferred to subsequent phases:
-1. **Vector Search & Base RAG**: Cosine similarity queries and LLM generation scheduled for **Phases 06-08**.
-2. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
-3. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+### Criteria Verified
+- [x] Semantic Vector Retrieval over pgvector:
+  - Cosine distance (`<=>`) metric over 1536-dimensional chunk embeddings.
+  - Cosine similarity computed as `1 - distance`.
+  - HNSW vector index (`idx_chunks_embedding`) utilized for efficient approximate nearest neighbor retrieval.
+  - Strict tenant isolation: scoped strictly to authenticated organization (`d.organization_id = $2`), ready versions (`dv.status = 'ready'`), and current versions (`dv.id = d.current_version_id`). Zero cross-tenant leakage.
+  - Configurable `topK` with strict bounds (min 1, max 20, default 5).
+  - Document-scoped filtering via optional `documentId` parameter.
+  - Empty corpus and no-match queries return empty candidate sets safely without errors.
+  - Query normalization: strips ASCII control characters, collapses whitespace, trims boundaries.
+- [x] Observability & Latency Separation:
+  - Granular latency breakdowns separating `embeddingMs`, `retrievalMs`, and `generationMs` in internal result metadata and API responses.
+- [x] Prompt Construction & Anti-Prompt-Injection Security:
+  - Formats retrieved candidates into structured, delimited reference blocks (`[Source N: "Doc" | Section | Page | File | Lines]`).
+  - Enforces deterministic context character budget (`maxContextChars`, default 12,000 characters). Lower-ranked chunks exceeding budget are omitted or truncated.
+  - System prompt establishes explicit instruction hierarchy: reference documentation is untrusted data; source contents cannot override system rules; generation must rely strictly on retrieved facts; outside knowledge is forbidden; and model states clear insufficient-evidence message when facts are absent.
+- [x] Groq LLM Adapter & Testing Fallback:
+  - `GroqProvider` implements Groq Chat Completions API using native Node 22 `fetch` (default model `llama-3.3-70b-versatile`).
+  - 30-second timeout handling with `AbortController` (504 `REQUEST_TIMEOUT`).
+  - Redaction of `gsk_...` API keys, `sk-...` API keys, and `Bearer` tokens from all error messages.
+  - `MockLLMProvider`: Deterministic grounded generation synthesizing answers from prompt context, enabling 100% offline testing without Groq credentials.
+  - Zero-candidate early return: if retrieval returns no chunks, `queryRAG` returns an insufficient-evidence response immediately without invoking the LLM provider.
+- [x] API Endpoints:
+  - `POST /api/organizations/:orgId/search` & `POST /api/organizations/:orgId/retrieval/vector`: Semantic search with RBAC (Viewer, Member, Admin authorized; non-member rejected with 404).
+  - `POST /api/organizations/:orgId/query` & `POST /api/organizations/:orgId/rag/query`: Grounded RAG query endpoint with RBAC.
+  - `POST /api/documents/:id/search` & `POST /api/documents/:id/query`: Document-scoped semantic search and RAG answering.
+- [x] Comprehensive Automated Tests:
+  - 14 vector retrieval, ranking, tenant isolation, and status filtering tests (`apps/api/tests/vectorSearch.test.ts`).
+  - 17 prompt construction, context budgeting, Groq adapter error handling, and API route tests (`apps/api/tests/rag.test.ts`).
+  - **185 total monorepo tests passing** with 1 opt-in live test skipped and 0 failures.
+- [x] Zero dependency vulnerabilities (`npm audit` reports 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing cleanly with exit code 0.
 
 ---
 
-## 7. Next Step
+## 7. Known Gaps & Deferred Items
 
-Chunking, OpenAI embedding generation, pgvector persistence, chunk retrieval endpoints, and failure semantics are fully implemented and verified.
-**Status**: Ready for **Instruction 06 — Vector Search & Base RAG**.
+The following items are intentionally deferred to subsequent phases:
+1. **Hybrid Retrieval & Rank Fusion**: PostgreSQL full-text search (tsvector/GIN) combined with vector search via Reciprocal Rank Fusion (RRF) scheduled for **Phase 07**.
+2. **Grounded Chat & Citations**: Multi-turn chat sessions, citation validation against source chunk IDs, and source viewer scheduled for **Phase 08**.
+3. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
+4. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+
+---
+
+## 8. Next Step
+
+Vector similarity search, HNSW indexing, bounded context prompt construction, Groq LLM generation, and Fastify search/query API endpoints are fully implemented and verified.
+**Status**: Ready for **Instruction 07 — Hybrid Retrieval and Rank Fusion**.

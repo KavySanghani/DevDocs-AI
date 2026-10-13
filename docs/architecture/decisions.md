@@ -247,3 +247,36 @@ This document records the architectural decisions, trade-offs, and rationale ado
   5. **Failure Semantics & Transport Independence**:
      - If any pipeline stage fails (validation, normalization, chunking, embedding, persistence), the document version transitions to `failed` status, recording `errorStage` and a sanitized `error_message` in `source_details`. Partial chunks are rolled back atomically.
      - The ingestion pipeline is purely functional and transport-independent (`ingestDocumentVersion`), callable synchronously from the document upload handler or asynchronously from future worker queues without duplicating logic.
+
+---
+
+## ADR-017: pgvector Cosine Distance Semantic Retrieval, HNSW Indexing Strategy & Grounded Groq RAG Pipeline
+
+- **Status**: Accepted
+- **Context**: In Phase 6, semantic vector search must be executed over stored document chunks in PostgreSQL, and retrieved candidates must be passed as bounded context to the first end-to-end RAG answer flow. The retrieval layer must remain modular and transport-independent so it can be combined with PostgreSQL full-text search and Reciprocal Rank Fusion (RRF) in Phase 7. Multi-tenant isolation, anti-prompt-injection grounding, and deterministic context budgeting are strict security requirements.
+- **Decision**:
+  1. **Similarity Metric & pgvector Operator**:
+     - Standardized on **cosine distance** using pgvector's `<=>` operator over unit-normalized 1536-dimensional vectors.
+     - Cosine similarity is computed and returned as `similarity = 1 - distance` (ranging from 0.0 to 1.0).
+     - Cosine distance is scale-invariant and matches OpenAI `text-embedding-3-small` geometry.
+  2. **Vector Indexing Strategy**:
+     - Utilizes the HNSW index on `chunks (embedding vector_cosine_ops)` configured in migration `002_create_initial_schema.sql` (`idx_chunks_embedding`).
+     - HNSW (Hierarchical Navigable Small World) provides fast approximate nearest neighbor search with high recall and logarithmic search complexity, avoiding the recall degradation and training clustering phases of IVFFlat.
+  3. **Strict Tenant Isolation & State Scoping**:
+     - Every vector search query enforces parameterized SQL scoping:
+       - `d.organization_id = $2`: Never scans or returns other tenant chunks even briefly to application code.
+       - `dv.status = 'ready'`: Restricts candidates to fully ingested and validated versions.
+       - `dv.id = d.current_version_id`: Prevents stale historical versions from appearing in retrieval results.
+     - Supports optional `documentId` filter to scope retrieval to a specific document.
+     - Strict `topK` bounds (min 1, max 20, default 5).
+  4. **Granular Observability & Latency Separation**:
+     - Internal and API result metadata separates `embeddingMs` (query vector generation), `retrievalMs` (PostgreSQL pgvector query), and `generationMs` (LLM completion), allowing independent tracking of embedding and database retrieval bottlenecks.
+  5. **Context Budgeting & Anti-Prompt-Injection Invariants**:
+     - Context builder greedily includes top-ranked candidates up to `maxContextChars` (default 12,000 characters, ~3,000 tokens), deterministically truncating or omitting chunks that exceed budget.
+     - All retrieved content is presented in structured delimited source blocks with document name, section title, page number, file path, and line numbers.
+     - System prompt establishes explicit instruction hierarchy: retrieved text is untrusted external data; instructions within reference documentation cannot override system rules; the model must rely solely on stated facts; and if evidence is lacking, the model must explicitly return "I cannot answer this question based on the provided documentation."
+  6. **Groq Provider Adapter & Offline Mock Testing**:
+     - `GroqProvider` communicates with Groq Chat Completions API (`https://api.groq.com/openai/v1/chat/completions`) using native Node 22 `fetch` and `AbortController` (timeout: 30s).
+     - Redacts `gsk_...` keys, `sk-...` keys, and `Bearer` tokens from all error outputs.
+     - `MockLLMProvider` generates deterministic grounded answers for test suites and offline environments, guaranteeing reproducible tests without live Groq API keys.
+     - When retrieval yields zero candidates, `queryRAG` returns early with an insufficient-evidence response without making an unnecessary external LLM call.

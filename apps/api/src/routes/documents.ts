@@ -2,6 +2,8 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DocumentListQuerySchema,
   hasMinimumRole,
+  VectorSearchRequestSchema,
+  RAGQueryRequestSchema,
 } from '@devdocs/shared';
 import { getEnv } from '../config/env.js';
 import { authenticate } from '../middleware/auth.js';
@@ -19,6 +21,8 @@ import {
   ingestDocumentVersion,
   IngestionError,
 } from '../services/ingestion/index.js';
+import { searchSimilarChunks, RetrievalError } from '../services/retrieval/index.js';
+import { queryRAG, LLMError } from '../services/generation/index.js';
 
 interface DocParams {
   id: string;
@@ -411,6 +415,116 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
             message: err.message,
             statusCode: err.statusCode,
             stage: err.stage,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/search - Semantic vector search within a specific document
+  app.post<{ Params: DocParams }>('/:id/search', async (request, reply) => {
+    try {
+      const doc = await getDocumentById(request.params.id, request.user!.userId);
+
+      const parseResult = VectorSearchRequestSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid vector search parameters',
+            statusCode: 400,
+            requestId: request.id,
+            details: parseResult.error.issues,
+          },
+        });
+      }
+
+      const result = await searchSimilarChunks({
+        organizationId: doc.organizationId,
+        documentId: doc.id,
+        ...parseResult.data,
+      });
+
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof RetrievalError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/query - Grounded RAG query within a specific document
+  app.post<{ Params: DocParams }>('/:id/query', async (request, reply) => {
+    try {
+      const doc = await getDocumentById(request.params.id, request.user!.userId);
+
+      const parseResult = RAGQueryRequestSchema.safeParse(request.body);
+      if (!parseResult.success) {
+        return reply.status(400).send({
+          error: {
+            code: 'VALIDATION_ERROR',
+            message: 'Invalid RAG query parameters',
+            statusCode: 400,
+            requestId: request.id,
+            details: parseResult.error.issues,
+          },
+        });
+      }
+
+      const result = await queryRAG({
+        organizationId: doc.organizationId,
+        documentId: doc.id,
+        ...parseResult.data,
+      });
+
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof RetrievalError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof LLMError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
             requestId: request.id,
           },
         });

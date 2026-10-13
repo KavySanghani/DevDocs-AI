@@ -75,6 +75,25 @@ export const ApiEnvSchema = z
       .transform((val) => parseInt(val, 10))
       .pipe(z.number().int().positive()),
 
+    // Vector Retrieval & Groq LLM Generation Pipeline (Phase 6)
+    LLM_PROVIDER: z.enum(['groq', 'mock']).default('groq'),
+    GROQ_MODEL: z.string().default('llama-3.3-70b-versatile'),
+    GROQ_TIMEOUT_MS: z
+      .string()
+      .default('30000')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    RAG_MAX_CONTEXT_CHARS: z
+      .string()
+      .default('12000')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    RAG_MAX_TOP_K: z
+      .string()
+      .default('20')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+
     // External Provider Keys & Deferred Infrastructure
     OPENAI_API_KEY: z.string().optional(),
     GROQ_API_KEY: z.string().optional(),
@@ -101,6 +120,15 @@ export const ApiEnvSchema = z
           message:
             'OPENAI_API_KEY is required in production when EMBEDDING_PROVIDER is set to "openai".',
           path: ['OPENAI_API_KEY'],
+        });
+      }
+
+      if (data.LLM_PROVIDER === 'groq' && (!data.GROQ_API_KEY || data.GROQ_API_KEY.trim() === '')) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            'GROQ_API_KEY is required in production when LLM_PROVIDER is set to "groq".',
+          path: ['GROQ_API_KEY'],
         });
       }
     }
