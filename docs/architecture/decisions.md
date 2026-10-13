@@ -168,3 +168,25 @@ This document records the architectural decisions, trade-offs, and rationale ado
   2. Automated test suite reset uses a separate guarded path: requires `NODE_ENV='test'` (or Vitest), requires the target database name to end in `_test`, and explicitly rejects any target matching `DATABASE_URL` after parsing host, port, user, and database components.
   3. All database targets are logged with credentials redacted.
 - **Rationale**: Prevents accidental data destruction from misconfigured environments, missing CLI arguments, or default fallbacks.
+
+---
+
+## ADR-014: Authentication, Organization Membership, and RBAC Model
+
+- **Status**: Accepted
+- **Context**: The platform requires secure multi-tenant isolation, user authentication, and granular role-based permissions (Admin, Member, Viewer) across workspaces. Client-side hiding of UI elements cannot be trusted as authorization.
+- **Decision**:
+  1. **Password Security**: Hash passwords using `bcryptjs` with 10 salt rounds. Plaintext passwords and hashes are never exposed in API responses or logs. Email addresses are consistently lowercased and trimmed.
+  2. **JWT & Expiration**: Authenticated users receive signed JWT tokens with claims `{ userId, email, jti }` and an expiration time (default 24h). Tokens must be signed by the validated `JWT_SECRET` (minimum 32 characters in production).
+  3. **Revocation & Logout Strategy**: Each JWT includes a cryptographically unique `jti` (UUID). On logout, the token's `jti` and expiration timestamp are recorded into a PostgreSQL table `revoked_tokens`.
+     - *Trade-off*: Checking `revoked_tokens` during authentication adds a single fast index lookup (`SELECT jti FROM revoked_tokens WHERE jti = $1`). This provides immediate revocation without requiring external infrastructure (like Redis) prior to Phase 10. When Redis is introduced in Phase 10, the denylist lookup can be cached or moved to Redis TTL keys seamlessly.
+  4. **Workspace Ownership & RBAC Hierarchy**:
+     - Creating an organization atomically grants the creator an `Admin` membership.
+     - Role hierarchy: `Admin` > `Member` > `Viewer`.
+     - `Admin`: Manage members/roles, upload documents, re-index, delete resources, view analytics.
+     - `Member`: Upload documents, trigger indexing, chat, ask questions, view citations.
+     - `Viewer`: Read resources, search, chat, view citations; cannot mutate data or manage members.
+     - Protected role operations enforce guards to prevent removing or demoting the last remaining admin in an organization.
+  5. **Tenant Isolation & Non-Disclosure**:
+     - Client-provided `organizationId` is never trusted without validating database membership for the authenticated user.
+     - Cross-tenant access attempts return HTTP 404 (`ORGANIZATION_NOT_FOUND` / `RESOURCE_NOT_FOUND`) rather than 403, preventing unauthorized callers from enumerating the existence of external tenants or documents.

@@ -30,6 +30,7 @@ This guide covers setting up your local development environment for DevDocs AI.
    - `CORS_ORIGIN`: Allowed origins for CORS (default: `http://localhost:5173`)
    - `DATABASE_URL`: PostgreSQL connection string (e.g. `postgresql://localhost:5433/devdocs_ai`)
    - `TEST_DATABASE_URL`: Test database connection string (e.g. `postgresql://localhost:5433/devdocs_ai_test`)
+   - `JWT_SECRET`: Secret key for signing JWT access tokens (minimum 32 characters in production)
 
 ---
 
@@ -134,4 +135,44 @@ curl -s http://localhost:4000/health/live | jq
 
 # Readiness probe
 curl -s http://localhost:4000/health/ready | jq
+```
+
+---
+
+## 8. Manual Testing (Auth & Organizations)
+
+Once the API server is running, you can test the Phase 3 authentication and RBAC workflows using `curl`:
+
+```bash
+# 1. Register a new user
+curl -s -X POST http://localhost:4000/api/auth/register \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"Password123!"}' | jq
+
+# 2. Login to obtain a JWT token
+TOKEN=$(curl -s -X POST http://localhost:4000/api/auth/login \
+  -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"Password123!"}' | jq -r .token)
+
+# 3. Retrieve current authenticated user profile
+curl -s http://localhost:4000/api/auth/me \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 4. Create an organization workspace (caller becomes Admin)
+ORG_ID=$(curl -s -X POST http://localhost:4000/api/organizations \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"Acme Engineering"}' | jq -r .organization.id)
+
+# 5. List your organizations
+curl -s http://localhost:4000/api/organizations \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 6. Revoke token via logout
+curl -s -X POST http://localhost:4000/api/auth/logout \
+  -H "Authorization: Bearer $TOKEN" | jq
+
+# 7. Verify revoked token is now rejected (returns 401 TOKEN_REVOKED)
+curl -s http://localhost:4000/api/auth/me \
+  -H "Authorization: Bearer $TOKEN" | jq
 ```

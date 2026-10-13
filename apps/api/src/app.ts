@@ -1,9 +1,12 @@
 import fastify, { type FastifyInstance } from 'fastify';
 import cors from '@fastify/cors';
-import { type ApiEnv, getEnv } from './config/env.js';
+import rateLimit from '@fastify/rate-limit';
+import { type ApiEnv, getEnv, setEnv } from './config/env.js';
 import { getLoggerOptions } from './config/logger.js';
 import { registerErrorHandler } from './plugins/errorHandler.js';
 import { healthRoutes } from './routes/health.js';
+import { authRoutes } from './routes/auth.js';
+import { organizationRoutes } from './routes/organizations.js';
 
 export interface BuildAppOptions {
   env?: ApiEnv;
@@ -14,10 +17,27 @@ export interface BuildAppOptions {
  * Creates and configures the Fastify server instance.
  */
 export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyInstance> {
+  if (options.env) {
+    setEnv(options.env);
+  }
   const env = options.env ?? getEnv();
   const serverOptions = getLoggerOptions(env);
 
   const app = fastify(serverOptions);
+
+  // Register Rate Limiting
+  if (env.NODE_ENV === 'test') {
+    await app.register(rateLimit, {
+      max: 100,
+      timeWindow: '1 minute',
+      allowList: () => true,
+    });
+  } else {
+    await app.register(rateLimit, {
+      max: 100,
+      timeWindow: '1 minute',
+    });
+  }
 
   // Register CORS
   await app.register(cors, {
@@ -52,6 +72,8 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   // Register routes
   await app.register(healthRoutes);
   await app.register(healthRoutes, { prefix: '/api' });
+  await app.register(authRoutes, { prefix: '/api/auth' });
+  await app.register(organizationRoutes, { prefix: '/api/organizations' });
 
   return app;
 }

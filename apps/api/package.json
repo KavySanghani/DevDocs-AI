@@ -9,18 +9,24 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "lint": "tsc --noEmit",
-    "test": "vitest run",
+    "test": "vitest run --fileParallelism=false",
     "clean": "rm -rf dist"
   },
   "dependencies": {
+    "@devdocs/db": "*",
     "@devdocs/shared": "*",
     "@fastify/cors": "^10.0.2",
+    "@fastify/rate-limit": "^11.2.1",
+    "bcryptjs": "^3.0.3",
     "dotenv": "^16.4.7",
     "fastify": "^5.2.1",
+    "jsonwebtoken": "^9.0.3",
     "pino": "^9.6.0",
     "zod": "^3.24.2"
   },
   "devDependencies": {
+    "@types/bcryptjs": "^2.4.6",
+    "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^22.13.4",
     "tsx": "^4.19.3",
     "typescript": "^5.7.3",

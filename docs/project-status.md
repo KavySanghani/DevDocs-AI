@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 02 Completion Checkpoint
+Last Updated: Phase 03 Completion Checkpoint
 
 ---
 
@@ -10,7 +10,7 @@ Last Updated: Phase 02 Completion Checkpoint
 | :--- | :--- | :--- | :--- |
 | **01** | **Architecture and Bootstrap** | **COMPLETED** | Monorepo, Fastify 5 API, React 18 UI, Zod validation, Pino logging, tests passing |
 | **02** | **Database Schema & Migrations** | **COMPLETED** | PostgreSQL + pgvector 0.8+, 12 domain tables, sequential migrations, 15 integration tests |
-| 03 | Auth, Organizations & RBAC | PENDING | Scheduled for Instruction 03 (JWT, bcrypt, tenant RBAC) |
+| **03** | **Auth, Organizations & RBAC** | **COMPLETED** | Bcrypt hashing, JWT + jti denylist revocation, multi-tenant RBAC (Admin/Member/Viewer), 100 monorepo tests passing |
 | 04 | Document Upload & Parsing | PENDING | Scheduled for Instruction 04 |
 | 05 | Chunking, Embeddings & Ingestion | PENDING | Scheduled for Instruction 05 |
 | 06 | Vector Search & Base RAG | PENDING | Scheduled for Instruction 06 |
@@ -60,17 +60,58 @@ Last Updated: Phase 02 Completion Checkpoint
 
 ---
 
-## 3. Known Gaps & Deferred Items
+## 3. Phase 03 Verification & Evidence
 
-The following items are intentionally deferred to their respective phases:
-1. **Authentication & RBAC**: Password hashing (bcrypt) and JWT endpoints are scheduled for **Phase 03**.
-2. **Document Ingestion**: File upload processing and parsers are scheduled for **Phases 04-05**.
-3. **Vector Embeddings & LLM Generation**: OpenAI embedding calls and Groq chat completions are scheduled for **Phases 05-08**.
-4. **Background Worker & Queue**: BullMQ and Redis are scheduled for **Phase 10**.
+### Criteria Verified
+- [x] User Registration & Login:
+  - Password hashing via bcrypt (`bcryptjs`) with 10 salt rounds. Plaintext passwords are never stored.
+  - Plaintext passwords and `password_hash` are never returned in API responses or leaked in logs.
+  - Case-insensitive email normalization and validation via Zod schemas.
+  - Generic 401 `INVALID_CREDENTIALS` error prevents account existence enumeration.
+- [x] Token Lifecycle & Revocation:
+  - Expiring JWT access tokens with cryptographically random `jti` (UUID) claims and configurable lifetime.
+  - Strict secret validation (`JWT_SECRET` minimum 32 characters in production; non-default values enforced).
+  - Explicit logout token revocation via PostgreSQL `revoked_tokens` denylist table (`003_create_revoked_tokens.sql`).
+  - Cascading deletion (`ON DELETE CASCADE`) ensures cleanup when user accounts are removed.
+  - Immediate rejection (`401 TOKEN_REVOKED`) of logged-out tokens on subsequent requests.
+- [x] Organization Workspace & Membership:
+  - Atomic organization creation within transaction; creator automatically assigned `Admin` role.
+  - URL-safe slug generation with collision resistance.
+  - Listing user organizations via `GET /api/organizations` and `GET /api/auth/me`.
+  - Member management (`addOrganizationMember`, `updateMemberRole`, `removeOrganizationMember`).
+  - Sole administrator protection: demoting or removing the last admin in an organization is strictly blocked (`CANNOT_DEMOTE_LAST_ADMIN`, `CANNOT_REMOVE_LAST_ADMIN`).
+- [x] Server-Side RBAC Enforcement:
+  - Role hierarchy: `Admin` > `Member` > `Viewer`.
+  - PreHandler hook `requireOrgRole(role)` enforces minimum role on every protected route.
+  - Verified across real resource operations:
+    - `Admin`: Can create/upload documents, read documents, delete documents, and manage members.
+    - `Member`: Can create/upload documents and read documents; rejected from deleting documents (403 `FORBIDDEN`) and managing members (403 `FORBIDDEN`).
+    - `Viewer`: Can read documents and view member list; rejected from uploading documents (403 `FORBIDDEN`), deleting documents (403 `FORBIDDEN`), and managing members (403 `FORBIDDEN`).
+- [x] Multi-Tenant Isolation & Non-Disclosure:
+  - Database membership verified on all organization routes; client-supplied `organization_id` header or body parameters cannot bypass authorization.
+  - Foreign organization access attempts return 404 `ORGANIZATION_NOT_FOUND` / `DOCUMENT_NOT_FOUND` to prevent attackers from discovering whether external tenants or resources exist.
+- [x] Test Coverage:
+  - 13 authentication tests in `apps/api/tests/auth.test.ts`.
+  - 26 RBAC and tenant isolation tests in `apps/api/tests/rbac.test.ts`.
+  - 44 database schema & reset safety tests in `packages/db/tests/`.
+  - 5 shared schema tests in `packages/shared/tests/`.
+  - 12 health & env tests in `apps/api/tests/`.
+  - **100 total monorepo tests passing** with zero failures.
+- [x] Zero dependency vulnerabilities (`npm audit` reporting 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing with exit code 0.
 
 ---
 
-## 4. Next Step
+## 4. Known Gaps & Deferred Items
 
-The database layer and migration system are fully operational, tested against real pgvector operations, and strictly typed.
-**Status**: Ready for **Instruction 03 — Authentication, Organizations, and RBAC**.
+The following items are intentionally deferred to their respective phases:
+1. **Document Ingestion & File Upload**: File parsing, PDF/markdown extractors are scheduled for **Phases 04-05**.
+2. **Vector Embeddings & LLM Generation**: OpenAI embedding calls and Groq chat completions are scheduled for **Phases 05-08**.
+3. **Background Worker & Queue**: BullMQ and Redis are scheduled for **Phase 10**.
+
+---
+
+## 5. Next Step
+
+Authentication, organization workspaces, and multi-tenant RBAC are fully implemented and verified.
+**Status**: Ready for **Instruction 04 — Document Upload & Parsing**.

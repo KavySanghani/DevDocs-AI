@@ -53,22 +53,24 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       const res = await client.query<{ version: string; name: string }>(
         'SELECT version, name FROM schema_migrations ORDER BY version ASC'
       );
-      expect(res.rows.length).toBe(2);
+      expect(res.rows.length).toBe(3);
       expect(res.rows[0]?.version).toBe('001');
       expect(res.rows[0]?.name).toBe('enable_pgvector');
       expect(res.rows[1]?.version).toBe('002');
       expect(res.rows[1]?.name).toBe('create_initial_schema');
+      expect(res.rows[2]?.version).toBe('003');
+      expect(res.rows[2]?.name).toBe('create_revoked_tokens');
     });
 
     it('re-running migrations is completely idempotent (applies 0, skips all)', async () => {
       const result = await runMigrations(TEST_DATABASE_URL);
       expect(result.applied.length).toBe(0);
-      expect(result.skipped.length).toBe(2);
+      expect(result.skipped.length).toBe(3);
     });
 
     it('reports migration status correctly', async () => {
       const status = await getMigrationStatus(TEST_DATABASE_URL);
-      expect(status.length).toBe(2);
+      expect(status.length).toBe(3);
       expect(status.every((s) => s.applied)).toBe(true);
     });
   });
@@ -82,7 +84,7 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       expect(res.rows[0]?.extname).toBe('vector');
     });
 
-    it('has all 12 core domain tables created', async () => {
+    it('has all core domain and auth tables created', async () => {
       const res = await client.query<{ table_name: string }>(
         `SELECT table_name FROM information_schema.tables
          WHERE table_schema = 'public' AND table_type = 'BASE TABLE'`
@@ -102,6 +104,7 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
         'retrieval_results',
         'feedback',
         'jobs',
+        'revoked_tokens',
       ];
 
       for (const table of expected) {
@@ -289,6 +292,31 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
         [docId]
       );
       expect(docCheck.rows[0]?.created_by).toBeNull();
+    });
+
+    it('cascades user deletion to revoked_tokens (ON DELETE CASCADE)', async () => {
+      const userRes = await client.query<{ id: string }>(
+        "INSERT INTO users (email, password_hash) VALUES ('tokendelete@example.com', 'hash') RETURNING id"
+      );
+      const userId = userRes.rows[0]!.id;
+
+      await client.query(
+        "INSERT INTO revoked_tokens (jti, user_id, expires_at) VALUES ('jti-test-123', $1, now() + interval '1 hour')",
+        [userId]
+      );
+
+      const beforeCount = await client.query(
+        "SELECT count(*) FROM revoked_tokens WHERE jti = 'jti-test-123'"
+      );
+      expect(parseInt(beforeCount.rows[0]!.count, 10)).toBe(1);
+
+      // Delete user
+      await client.query('DELETE FROM users WHERE id = $1', [userId]);
+
+      const afterCount = await client.query(
+        "SELECT count(*) FROM revoked_tokens WHERE jti = 'jti-test-123'"
+      );
+      expect(parseInt(afterCount.rows[0]!.count, 10)).toBe(0);
     });
   });
 
