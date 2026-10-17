@@ -380,3 +380,115 @@ export const RAGQueryResponseSchema = z.object({
   latency: RetrievalLatencyBreakdownSchema,
 });
 export type RAGQueryResponse = z.infer<typeof RAGQueryResponseSchema>;
+
+// ==============================================================================
+// Grounded Chat & Citations Schemas (Phase 8)
+// ==============================================================================
+
+export const ChatMessageRoleSchema = z.enum(['user', 'assistant', 'system']);
+export type ChatMessageRole = z.infer<typeof ChatMessageRoleSchema>;
+
+export const CitationResponseSchema = z.object({
+  id: z.string().uuid().optional(),
+  citationNumber: z.number().int().min(1),
+  chunkId: z.string().uuid(),
+  documentId: z.string().uuid(),
+  documentName: z.string(),
+  pageNumber: z.number().int().nullable().optional(),
+  sectionTitle: z.string().nullable().optional(),
+  filePath: z.string().nullable().optional(),
+  lineStart: z.number().int().nullable().optional(),
+  lineEnd: z.number().int().nullable().optional(),
+  snippet: z.string().nullable().optional(),
+});
+export type CitationResponse = z.infer<typeof CitationResponseSchema>;
+
+export const ChatMessageResponseSchema = z.object({
+  id: z.string().uuid(),
+  sessionId: z.string().uuid(),
+  role: ChatMessageRoleSchema,
+  content: z.string(),
+  retrievalRunId: z.string().uuid().nullable().optional(),
+  citations: z.array(CitationResponseSchema).optional(),
+  createdAt: z.string(),
+});
+export type ChatMessageResponse = z.infer<typeof ChatMessageResponseSchema>;
+
+export const ChatSessionResponseSchema = z.object({
+  id: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  userId: z.string().uuid().nullable().optional(),
+  title: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type ChatSessionResponse = z.infer<typeof ChatSessionResponseSchema>;
+
+export const ChatSessionDetailResponseSchema = z.object({
+  session: ChatSessionResponseSchema,
+  messages: z.array(ChatMessageResponseSchema),
+});
+export type ChatSessionDetailResponse = z.infer<typeof ChatSessionDetailResponseSchema>;
+
+export const ChatSessionListResponseSchema = z.object({
+  sessions: z.array(ChatSessionResponseSchema),
+  total: z.number().int().min(0),
+  page: z.number().int().min(1),
+  limit: z.number().int().min(1),
+  totalPages: z.number().int().min(1),
+});
+export type ChatSessionListResponse = z.infer<typeof ChatSessionListResponseSchema>;
+
+export const CreateChatSessionRequestSchema = z.object({
+  organizationId: z.string().uuid().optional(),
+  title: z.string().min(1).max(255).optional(),
+});
+export type CreateChatSessionRequest = z.infer<typeof CreateChatSessionRequestSchema>;
+
+export const CreateChatMessageRequestSchema = z.object({
+  content: z
+    .string()
+    .min(1, 'Message content must not be empty')
+    .max(4000, 'Message content exceeds 4000 character limit')
+    .transform((c) => c.trim()),
+  mode: RetrievalModeSchema.default('hybrid').optional(),
+  topK: z.coerce.number().int().min(1).max(20).default(5).optional(),
+  documentId: z.string().uuid().optional(),
+  maxContextChars: z.coerce.number().int().min(500).max(50000).optional(),
+});
+export type CreateChatMessageRequest = z.infer<typeof CreateChatMessageRequestSchema>;
+
+export const ChatMessageTurnResponseSchema = z.object({
+  userMessage: ChatMessageResponseSchema,
+  assistantMessage: ChatMessageResponseSchema,
+  citations: z.array(CitationResponseSchema),
+  retrieval: z.object({
+    runId: z.string().uuid().optional(),
+    retriever: z.string(),
+    candidateCount: z.number().int().min(0),
+    topK: z.number().int().min(1),
+    chunks: z.array(RetrievedChunkSchema),
+  }),
+  insufficientEvidence: z.boolean(),
+  latency: RetrievalLatencyBreakdownSchema,
+});
+export type ChatMessageTurnResponse = z.infer<typeof ChatMessageTurnResponseSchema>;
+
+export const ChunkSourceResponseSchema = z.object({
+  id: z.string().uuid(),
+  documentId: z.string().uuid(),
+  documentName: z.string(),
+  documentVersionId: z.string().uuid(),
+  chunkIndex: z.number().int().min(0),
+  content: z.string(),
+  characterCount: z.number().int().min(0),
+  tokenCount: z.number().int().nullable().optional(),
+  pageNumber: z.number().int().nullable().optional(),
+  sectionTitle: z.string().nullable().optional(),
+  filePath: z.string().nullable().optional(),
+  lineStart: z.number().int().nullable().optional(),
+  lineEnd: z.number().int().nullable().optional(),
+  metadata: z.record(z.unknown()).optional(),
+  createdAt: z.string(),
+});
+export type ChunkSourceResponse = z.infer<typeof ChunkSourceResponseSchema>;

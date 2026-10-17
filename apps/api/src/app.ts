@@ -10,6 +10,7 @@ import { authRoutes } from './routes/auth.js';
 import { organizationRoutes } from './routes/organizations.js';
 import { documentRoutes } from './routes/documents.js';
 import { searchRoutes } from './routes/search.js';
+import { chatRoutes } from './routes/chat.js';
 
 export interface BuildAppOptions {
   env?: ApiEnv;
@@ -87,6 +88,7 @@ export async function buildApp(options: BuildAppOptions = {}): Promise<FastifyIn
   await app.register(organizationRoutes, { prefix: '/api/organizations' });
   await app.register(documentRoutes, { prefix: '/api/documents' });
   await app.register(searchRoutes, { prefix: '/api' });
+  await app.register(chatRoutes, { prefix: '/api/chat' });
 
   return app;
 }

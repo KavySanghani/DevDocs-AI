@@ -53,24 +53,26 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       const res = await client.query<{ version: string; name: string }>(
         'SELECT version, name FROM schema_migrations ORDER BY version ASC'
       );
-      expect(res.rows.length).toBe(3);
+      expect(res.rows.length).toBe(4);
       expect(res.rows[0]?.version).toBe('001');
       expect(res.rows[0]?.name).toBe('enable_pgvector');
       expect(res.rows[1]?.version).toBe('002');
       expect(res.rows[1]?.name).toBe('create_initial_schema');
       expect(res.rows[2]?.version).toBe('003');
       expect(res.rows[2]?.name).toBe('create_revoked_tokens');
+      expect(res.rows[3]?.version).toBe('004');
+      expect(res.rows[3]?.name).toBe('create_citations');
     });
 
     it('re-running migrations is completely idempotent (applies 0, skips all)', async () => {
       const result = await runMigrations(TEST_DATABASE_URL);
       expect(result.applied.length).toBe(0);
-      expect(result.skipped.length).toBe(3);
+      expect(result.skipped.length).toBe(4);
     });
 
     it('reports migration status correctly', async () => {
       const status = await getMigrationStatus(TEST_DATABASE_URL);
-      expect(status.length).toBe(3);
+      expect(status.length).toBe(4);
       expect(status.every((s) => s.applied)).toBe(true);
     });
   });
@@ -102,6 +104,7 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
         'messages',
         'retrieval_runs',
         'retrieval_results',
+        'citations',
         'feedback',
         'jobs',
         'revoked_tokens',
@@ -419,6 +422,69 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
 
       expect(searchRes.rows.length).toBe(1);
       expect(searchRes.rows[0]?.chunk_index).toBe(0);
+    });
+  });
+
+  describe('6. Citations Table Integrity & Constraints', () => {
+    it('persists citation records and enforces foreign keys and unique (message_id, citation_number)', async () => {
+      // Create user, org, session, message, document, version, chunk
+      const uRes = await client.query<{ id: string }>(
+        "INSERT INTO users (email, password_hash) VALUES ('cite_user@example.com', 'hash') RETURNING id"
+      );
+      const oRes = await client.query<{ id: string }>(
+        "INSERT INTO organizations (name, slug) VALUES ('Cite Org', 'cite-org') RETURNING id"
+      );
+      const sRes = await client.query<{ id: string }>(
+        'INSERT INTO chat_sessions (organization_id, user_id, title) VALUES ($1, $2, $3) RETURNING id',
+        [oRes.rows[0]!.id, uRes.rows[0]!.id, 'Test Chat']
+      );
+      const mRes = await client.query<{ id: string }>(
+        "INSERT INTO messages (session_id, role, content) VALUES ($1, 'assistant', 'Answer with citation [1]') RETURNING id",
+        [sRes.rows[0]!.id]
+      );
+      const dRes = await client.query<{ id: string }>(
+        "INSERT INTO documents (organization_id, name, source_type) VALUES ($1, 'doc.md', 'markdown') RETURNING id",
+        [oRes.rows[0]!.id]
+      );
+      const vRes = await client.query<{ id: string }>(
+        'INSERT INTO document_versions (document_id, version_number, content_hash) VALUES ($1, 1, $2) RETURNING id',
+        [dRes.rows[0]!.id, 'hash_cite']
+      );
+      const cRes = await client.query<{ id: string }>(
+        'INSERT INTO chunks (document_version_id, chunk_index, content) VALUES ($1, 0, $2) RETURNING id',
+        [vRes.rows[0]!.id, 'Sample chunk text for citation test']
+      );
+
+      const messageId = mRes.rows[0]!.id;
+      const chunkId = cRes.rows[0]!.id;
+      const docId = dRes.rows[0]!.id;
+
+      // Insert valid citation
+      const insertCite = await client.query<{ id: string }>(
+        `INSERT INTO citations (message_id, chunk_id, citation_number, document_id, document_name, section_title, snippet)
+         VALUES ($1, $2, 1, $3, 'doc.md', 'Introduction', 'Sample chunk snippet')
+         RETURNING id`,
+        [messageId, chunkId, docId]
+      );
+      expect(insertCite.rows.length).toBe(1);
+
+      // Verify unique (message_id, citation_number) constraint
+      await expect(
+        client.query(
+          `INSERT INTO citations (message_id, chunk_id, citation_number, document_name)
+           VALUES ($1, $2, 1, 'doc.md')`,
+          [messageId, chunkId]
+        )
+      ).rejects.toThrow(/uq_citations_message_number/);
+
+      // Verify check constraint on citation_number > 0
+      await expect(
+        client.query(
+          `INSERT INTO citations (message_id, chunk_id, citation_number, document_name)
+           VALUES ($1, $2, 0, 'doc.md')`,
+          [messageId, chunkId]
+        )
+      ).rejects.toThrow(/chk_citations_number/);
     });
   });
 });

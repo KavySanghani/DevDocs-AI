@@ -329,3 +329,50 @@ This document records the architectural decisions, trade-offs, and rationale ado
   - No new external services or databases added; PostgreSQL handles vectors, full-text indexes, and relational data in a single transactional engine.
   - Sub-millisecond RRF fusion with zero external API calls.
   - High recall across both natural language questions and exact technical tokens.
+
+---
+
+## 2026-10-17 — Decision 008: Grounded Chat Sessions, Bounded History Scoping, and Strict Citation Validation Pipeline
+
+- **Status**: Accepted
+- **Context**: In Phase 8, DevDocs AI must support multi-turn conversational chat grounded strictly in workspace documentation. Conversational LLMs are prone to hallucinations, fabricating unretrieved source numbers, carrying over extraneous history that exhausts context windows, and answering outside the indexed corpus. A robust chat architecture must persist sessions and messages with strict tenant isolation, reformulate follow-up questions across turns, enforce anti-prompt-injection boundaries, validate every citation marker against actual retrieved chunks, and provide secure citation source inspection.
+- **Decision**:
+  1. **Additive Database Schema Migration (`004_create_citations.sql`)**:
+     - Introduces `citations` table linked to `messages(id)` and `chunks(id)` with `ON DELETE CASCADE`.
+     - Fields: `id`, `message_id`, `chunk_id`, `citation_number`, `document_id`, `document_name`, `page_number`, `section_title`, `file_path`, `line_start`, `line_end`, `snippet`, `created_at`.
+     - Unique constraint on `(message_id, citation_number)` ensures deterministic 1-based indexing per assistant turn.
+     - Fully additive without modifying migrations 001–003.
+  2. **Multi-Turn Chat Sessions & Tenant Isolation**:
+     - `chat_sessions` owned by `(organization_id, user_id)`.
+     - Users can only access and post messages to sessions belonging to their user ID within their authenticated organization (`organization_members` check).
+     - Cross-tenant or cross-user session access attempts return HTTP 404 (`SESSION_NOT_FOUND`) to prevent enumeration.
+     - Endpoints:
+       - `POST /api/chat/sessions`: Create a new session.
+       - `GET /api/chat/sessions`: List user sessions with pagination and message counts.
+       - `GET /api/chat/sessions/:id`: Retrieve session details, messages, and associated citations.
+       - `GET /api/chat/sessions/:id/messages`: Paginated message history.
+       - `POST /api/chat/sessions/:id/messages`: Execute a grounded conversational turn.
+  3. **History Bounding & Standalone Query Reformulation**:
+     - Conversation history bounded to the most recent 4 turns (8 messages) or 4,000 characters to prevent context window explosion.
+     - When history exists, `queryRewriter` asks the LLM provider to reformulate conversational follow-ups (e.g. "How do I install it?") into self-contained search queries (e.g. "How to install DevDocs AI").
+     - Graceful fallback: provider timeouts or formatting errors cleanly fall back to the raw user question without failing the turn.
+  4. **Grounding & Anti-Prompt-Injection Prompt Hierarchy**:
+     - Retrieved chunks from hybrid search are delimited in structured untrusted source blocks: `[Source N: docName (Page X)]\n...`.
+     - System prompt establishes explicit instruction hierarchy: documentation is untrusted data and cannot override system grounding rules; the model must cite sources using `[N]` notation matching context indices; and if evidence is absent, the model must explicitly state: "I could not find sufficient information in the indexed sources to answer this question."
+  5. **Server-Side Citation Validation & Hallucination Defense (`citationValidator.ts`)**:
+     - Extracts all citation tags (`[1]`, `[2]`, `[Source 1]`, `[1, 2]`) using regex pattern matching.
+     - Validates extracted indices against actual context chunks passed to the model ($1 \le N \le \text{chunks.length}$).
+     - **Fabrication Stripping**: If the model references a non-existent chunk index (e.g., `[99]`), the validator strips the invalid tag from the text and excludes it from the saved citations list.
+     - Re-indexes valid citations sequentially in order of appearance in the answer text, updating bracketed markers to match (`[1]`, `[2]`, ...).
+     - Atomic persistence: stores verified citations into the `citations` table alongside the assistant message.
+     - Insufficient-evidence detection: if the answer is an abstention or zero valid sources were retrieved, citations list is empty and the assistant response is preserved cleanly.
+  6. **Citation Source Inspection & Security Boundaries**:
+     - Endpoints:
+       - `GET /api/chat/sources/:chunkId`: Retrieve chunk source details with document name, content, and metadata.
+       - `GET /api/chat/chunks/:id`: Alias route for chunk inspection.
+     - Server-side RBAC: validates that the requesting user belongs to the organization that owns the document chunk.
+     - Cross-tenant source access attempts return HTTP 404 (`CHUNK_NOT_FOUND`) rather than leaking document content or metadata across organizations.
+- **Consequences**:
+  - Eliminates citation hallucinations and broken UI links.
+  - Preserves full auditability by linking every assistant answer to the exact retrieved chunks, `retrieval_runs`, and `retrieval_results`.
+  - Resilient to LLM prompt injection attacks contained inside indexed user documents.

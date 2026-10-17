@@ -185,9 +185,26 @@ export class MockLLMProvider implements LLMProvider {
     // Default intelligent mock response extracting facts from prompt
     const durationMs = Math.max(0, Date.now() - startTime);
 
-    if (userPrompt.includes('REFERENCE DOCUMENTATION:\n==================================================\n==================================================')) {
+    // Check if prompt is a query rewriting task
+    if (userPrompt.includes('CONVERSATION HISTORY:') && userPrompt.includes('LATEST QUESTION:')) {
+      const match = userPrompt.match(/LATEST QUESTION:\n([\s\S]*?)(?:\n\nINSTRUCTION:|$)/);
+      const query = match ? match[1]?.trim() : userPrompt;
       return {
-        content: 'I cannot answer this question based on the provided documentation.',
+        content: query || 'Standalone search query',
+        model: this.model,
+        provider: this.provider,
+        promptTokens: 80,
+        completionTokens: 15,
+        durationMs,
+      };
+    }
+
+    if (
+      userPrompt.includes('(No reference sources available)') ||
+      userPrompt.includes('REFERENCE DOCUMENTATION:\n==================================================\n==================================================')
+    ) {
+      return {
+        content: 'I could not find sufficient information in the indexed sources to answer this question.',
         model: this.model,
         provider: this.provider,
         promptTokens: 50,
@@ -196,13 +213,15 @@ export class MockLLMProvider implements LLMProvider {
       };
     }
 
-    // Extract first 200 characters of reference documentation to synthesize an answer
-    const refMatch = userPrompt.match(/REFERENCE DOCUMENTATION:\n={20,}\n([\s\S]*?)\n={20,}/);
+    // Extract reference text to synthesize a grounded answer
+    const refMatch =
+      userPrompt.match(/REFERENCE (?:SOURCES|DOCUMENTATION):\n={20,}\n([\s\S]*?)\n={20,}/) ||
+      userPrompt.match(/={20,}\n([\s\S]*?)\n={20,}/);
     const refContent = refMatch ? refMatch[1]?.trim() : '';
 
     if (!refContent) {
       return {
-        content: 'I cannot answer this question based on the provided documentation.',
+        content: 'I could not find sufficient information in the indexed sources to answer this question.',
         model: this.model,
         provider: this.provider,
         promptTokens: 50,
@@ -211,9 +230,64 @@ export class MockLLMProvider implements LLMProvider {
       };
     }
 
-    // Synthesize grounded answer
-    const firstLine = refContent.split('\n').find((l) => l.trim().length > 10 && !l.startsWith('[')) || 'The requested feature is configured according to the provided documentation.';
-    const synthesizedAnswer = `Based on the provided documentation, ${firstLine.trim()}`;
+    // Check semantic relevance between question and reference content
+    const questionMatch = userPrompt.match(/QUESTION:\n([\s\S]*?)(?:\n\nPlease|\n={10,}|$)/);
+    const questionText = (questionMatch && questionMatch[1]) ? questionMatch[1].trim() : '';
+
+    const stopwords = new Set([
+      'the', 'and', 'are', 'is', 'was', 'were', 'for', 'in', 'on', 'at', 'to',
+      'a', 'an', 'of', 'by', 'can', 'could', 'would', 'should', 'what', 'where',
+      'when', 'which', 'who', 'whom', 'whose', 'why', 'how', 'does', 'explain',
+      'describe', 'tell', 'show', 'please', 'about', 'from', 'with', 'this',
+      'that', 'these', 'those', 'they', 'them', 'their', 'have', 'has', 'had',
+      'more', 'some', 'such', 'into', 'over', 'under', 'then', 'than', 'work',
+      'used', 'use', 'using', 'all', 'any', 'each', 'other'
+    ]);
+    const questionWords = questionText
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .split(/\s+/)
+      .filter((w) => w.length >= 3 && !stopwords.has(w));
+
+    // Parse source blocks by [Source N:
+    const sourceRegex = /\[Source\s*(\d+):[^\n\]]*\]\n([\s\S]*?)(?=\[Source\s*\d+:|$)/g;
+    let sMatch: RegExpExecArray | null;
+    let bestSource: { number: number; content: string } | null = null;
+    let bestScore = -1;
+
+    while ((sMatch = sourceRegex.exec(refContent)) !== null) {
+      const num = parseInt(sMatch[1]!, 10);
+      const content = sMatch[2]!.trim();
+      const contentLower = content.toLowerCase();
+      const score = questionWords.filter((w) => contentLower.includes(w)).length;
+      if (score > bestScore) {
+        bestScore = score;
+        bestSource = { number: num, content };
+      }
+    }
+
+    if (questionWords.length > 0 && bestScore <= 0) {
+      return {
+        content: 'I could not find sufficient information in the indexed sources to answer this question.',
+        model: this.model,
+        provider: this.provider,
+        promptTokens: 50,
+        completionTokens: 15,
+        durationMs,
+      };
+    }
+
+    // Synthesize grounded answer from the most relevant source chunk
+    const chosen = bestSource || {
+      number: 1,
+      content: refContent.split('\n').find((l) => l.trim().length > 10 && !l.startsWith('[')) || refContent,
+    };
+    const firstLine =
+      chosen.content.split('\n').find((l) => l.trim().length > 10 && !l.startsWith('[')) ||
+      chosen.content;
+    const hasSourceTags = userPrompt.includes('[Source 1:') || userPrompt.includes('[1]');
+    const citationSuffix = hasSourceTags ? ` [${chosen.number}]` : '';
+    const synthesizedAnswer = `Based on the provided documentation, ${firstLine.trim()}${citationSuffix}`;
 
     return {
       content: synthesizedAnswer,

@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 06 Completion Checkpoint
+Last Updated: Phase 08 Completion Checkpoint
 
 ---
 
@@ -14,8 +14,8 @@ Last Updated: Phase 06 Completion Checkpoint
 | **04** | **Document Upload & Parsing** | **COMPLETED** | Multipart upload, PDF/Markdown/TXT parsers, magic bytes, path traversal sanitization, SHA-256 deduplication, 135 monorepo tests passing |
 | **05** | **Chunking, Embeddings & Ingestion** | **COMPLETED** | Structure-aware normalizer & chunker, native fetch OpenAI embeddings (1536d), pgvector transactional storage, 155 monorepo tests passing |
 | **06** | **Vector Search & Base RAG** | **COMPLETED** | pgvector cosine similarity retrieval, HNSW indexing, bounded context Groq LLM RAG, 186 monorepo tests passing |
-| 07 | Hybrid Retrieval & Rank Fusion | PENDING | Scheduled for Instruction 07 |
-| 08 | Grounded Chat & Citations | PENDING | Scheduled for Instruction 08 |
+| **07** | **Hybrid Retrieval & Rank Fusion** | **COMPLETED** | PostgreSQL tsvector FTS + RRF rank fusion, hybrid search, 226 tests passing |
+| **08** | **Grounded Chat & Citations** | **COMPLETED** | Grounded chat sessions, bounded multi-turn history, citation validation, chunk source viewer, 262 tests passing |
 | 09 | Document Versions & Reindex | PENDING | Scheduled for Instruction 09 |
 | 10 | Async Worker & Retries | PENDING | Scheduled for Instruction 10 |
 | 11 | GitHub Codebase Ingestion | PENDING | Scheduled for Instruction 11 |
@@ -253,16 +253,57 @@ Last Updated: Phase 06 Completion Checkpoint
 
 ---
 
-## 8. Known Gaps & Deferred Items
+## 8. Phase 08 Verification & Evidence
 
-The following items are intentionally deferred to subsequent phases:
-1. **Grounded Chat & Citations**: Multi-turn chat sessions, citation validation against source chunk IDs, and source viewer scheduled for **Phase 08**.
-2. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
-3. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+### Criteria Verified
+- [x] Database Migration `004_create_citations.sql`:
+  - Created `citations` table with `message_id`, `chunk_id`, `citation_number`, `document_id`, `document_name`, `page_number`, `section_title`, `file_path`, `line_start`, `line_end`, `snippet`.
+  - Enforces foreign keys to `messages(id)` and `chunks(id)` with `ON DELETE CASCADE`.
+  - Enforces unique constraint on `(message_id, citation_number)`.
+  - Sequential additive migration preserving 001–003.
+- [x] Multi-Turn Chat Sessions & Tenant Ownership:
+  - `chat_sessions` scoped to `organization_id` and `user_id`.
+  - Users only list, view, and chat in sessions belonging to their user account within authorized organizations.
+  - Cross-tenant and cross-user session access attempts safely return HTTP 404 (`SESSION_NOT_FOUND`).
+  - Session lifecycle endpoints: `POST /api/chat/sessions`, `GET /api/chat/sessions`, `GET /api/chat/sessions/:id`, `GET /api/chat/sessions/:id/messages`.
+- [x] Grounded Conversational Turn Execution (`POST /api/chat/sessions/:id/messages`):
+  - Bounded conversation history (max 4 turns / 8 messages, max 4,000 characters).
+  - Standalone query reformulation via `queryRewriter` resolves conversational pronouns and follow-up references.
+  - Hybrid retrieval (PostgreSQL FTS + pgvector cosine similarity + RRF) retrieves top relevant workspace chunks.
+  - Anti-prompt-injection grounding prompt structures context into untrusted `[Source N: ...]` blocks.
+  - Atomic persistence of user message, `retrieval_runs`, `retrieval_results`, assistant message, and validated `citations`.
+- [x] Server-Side Citation Validation (`citationValidator.ts`):
+  - Extracts citation tags (`[1]`, `[2]`, `[Source 1]`, `[1, 2]`).
+  - Validates indices against actual retrieved chunks passed into the prompt.
+  - Strips fabricated or out-of-bounds numbers (e.g. `[99]`) and prevents saving phantom citations.
+  - Re-indexes valid citations sequentially `[1]`, `[2]` in order of appearance in answer text.
+  - Explicit abstention detection: handles "I could not find sufficient information in the indexed sources..." cleanly with zero phantom citations.
+- [x] Citation Source Viewer:
+  - `GET /api/chat/sources/:chunkId` & `GET /api/chat/chunks/:id`: Returns full chunk content, document metadata, section title, page number, and line ranges.
+  - Server-side tenant RBAC: non-member or foreign-tenant requests return 404 (`CHUNK_NOT_FOUND`), preventing cross-tenant leakage.
+- [x] Provider Error Resilience:
+  - Provider timeouts or 5xx errors return structured 502/504 errors without creating orphaned assistant messages.
+- [x] Comprehensive Automated Tests:
+  - 10 citation validator unit and code-preservation regression tests (`apps/api/tests/citationValidator.test.ts`).
+  - 4 query rewriter unit tests (`apps/api/tests/queryRewriter.test.ts`).
+  - 16 chat session lifecycle, multi-turn, citation validation, abstention, injection, and non-disclosing 404 tests (`apps/api/tests/chat.test.ts`).
+  - **262 total monorepo tests passing** with 1 opt-in live test skipped and 0 failures.
+- [x] Zero dependency vulnerabilities (`npm audit` reports 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing cleanly with exit code 0.
 
 ---
 
-## 9. Next Step
+## 9. Known Gaps & Deferred Items
 
-Hybrid search, PostgreSQL full-text search, Reciprocal Rank Fusion, diagnostics, and Fastify search API endpoints are fully implemented and verified.
-**Status**: Ready for **Instruction 08 — Grounded Chat and Citations**.
+The following items are intentionally deferred to subsequent phases:
+1. **Document Versions & Reindex**: Multi-version comparison, branch diffing, and reindex triggers scheduled for **Phase 09**.
+2. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+3. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
+4. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
+
+---
+
+## 10. Next Step
+
+Grounded chat sessions, multi-turn query rewriting, citation validation, anti-prompt-injection fences, chunk source viewer, and Fastify chat API endpoints are fully implemented and verified.
+**Status**: Ready for **Independent Audit**, then **Instruction 09 — Document Versions and Reindex**.
