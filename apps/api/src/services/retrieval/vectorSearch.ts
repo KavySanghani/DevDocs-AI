@@ -51,7 +51,7 @@ export async function searchSimilarChunks(
   overrideProvider?: EmbeddingProvider
 ): Promise<VectorSearchResult> {
   const env = getEnv();
-  const { organizationId, query: rawQuery, documentId, similarityThreshold } = params;
+  const { organizationId, query: rawQuery, documentId, similarityThreshold, metadataFilter } = params;
 
   if (!organizationId) {
     throw new RetrievalError('Organization ID is required for vector search', 'INVALID_PARAM', 400);
@@ -119,6 +119,12 @@ export async function searchSimilarChunks(
     sqlParams.push(similarityThreshold);
   }
 
+  let metadataFilterClause = '';
+  if (metadataFilter && Object.keys(metadataFilter).length > 0) {
+    metadataFilterClause = `AND c.metadata @> $${paramIdx++}::jsonb`;
+    sqlParams.push(JSON.stringify(metadataFilter));
+  }
+
   const limitParamIdx = paramIdx;
   sqlParams.push(topK);
 
@@ -149,6 +155,7 @@ export async function searchSimilarChunks(
       AND c.embedding IS NOT NULL
       ${docFilterClause}
       ${thresholdClause}
+      ${metadataFilterClause}
     ORDER BY distance ASC
     LIMIT $${limitParamIdx}
   `;
@@ -165,25 +172,36 @@ export async function searchSimilarChunks(
   const retrievalDurationMs = Math.max(0, Date.now() - startRetrieval);
 
   // 3. Format retrieved candidate chunks
-  const chunks: RetrievedChunk[] = rows.map((row, index) => ({
-    id: row.id,
-    documentId: row.document_id,
-    documentName: row.document_name,
-    documentVersionId: row.document_version_id,
-    chunkIndex: row.chunk_index,
-    content: row.content,
-    characterCount: row.character_count,
-    tokenCount: row.token_count,
-    pageNumber: row.page_number,
-    sectionTitle: row.section_title,
-    filePath: row.file_path,
-    lineStart: row.line_start,
-    lineEnd: row.line_end,
-    similarityScore: Number(Number(row.similarity).toFixed(6)),
-    distance: Number(Number(row.distance).toFixed(6)),
-    rank: index + 1,
-    metadata: row.metadata ?? {},
-  }));
+  const chunks: RetrievedChunk[] = rows.map((row, index) => {
+    const similarity = Number(Number(row.similarity).toFixed(6));
+    const distance = Number(Number(row.distance).toFixed(6));
+    const rank = index + 1;
+    return {
+      id: row.id,
+      documentId: row.document_id,
+      documentName: row.document_name,
+      documentVersionId: row.document_version_id,
+      chunkIndex: row.chunk_index,
+      content: row.content,
+      characterCount: row.character_count,
+      tokenCount: row.token_count,
+      pageNumber: row.page_number,
+      sectionTitle: row.section_title,
+      filePath: row.file_path,
+      lineStart: row.line_start,
+      lineEnd: row.line_end,
+      similarityScore: similarity,
+      distance,
+      rank,
+      score: similarity,
+      vectorRank: rank,
+      vectorScore: similarity,
+      lexicalRank: null,
+      lexicalScore: null,
+      rrfScore: null,
+      metadata: row.metadata ?? {},
+    };
+  });
 
   return {
     query: normalizedQuery,

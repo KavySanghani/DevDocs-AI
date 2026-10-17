@@ -2,7 +2,7 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DocumentListQuerySchema,
   hasMinimumRole,
-  VectorSearchRequestSchema,
+  SearchRequestSchema,
   RAGQueryRequestSchema,
 } from '@devdocs/shared';
 import { getEnv } from '../config/env.js';
@@ -21,7 +21,7 @@ import {
   ingestDocumentVersion,
   IngestionError,
 } from '../services/ingestion/index.js';
-import { searchSimilarChunks, RetrievalError } from '../services/retrieval/index.js';
+import { searchHybridChunks, RetrievalError } from '../services/retrieval/index.js';
 import { queryRAG, LLMError } from '../services/generation/index.js';
 
 interface DocParams {
@@ -423,17 +423,17 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // POST /:id/search - Semantic vector search within a specific document
+  // POST /:id/search - Unified hybrid/keyword/vector search within a specific document
   app.post<{ Params: DocParams }>('/:id/search', async (request, reply) => {
     try {
       const doc = await getDocumentById(request.params.id, request.user!.userId);
 
-      const parseResult = VectorSearchRequestSchema.safeParse(request.body);
+      const parseResult = SearchRequestSchema.safeParse(request.body);
       if (!parseResult.success) {
         return reply.status(400).send({
           error: {
             code: 'VALIDATION_ERROR',
-            message: 'Invalid vector search parameters',
+            message: 'Invalid search parameters',
             statusCode: 400,
             requestId: request.id,
             details: parseResult.error.issues,
@@ -441,10 +441,17 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         });
       }
 
-      const result = await searchSimilarChunks({
+      const body = parseResult.data;
+      const result = await searchHybridChunks({
         organizationId: doc.organizationId,
         documentId: doc.id,
-        ...parseResult.data,
+        query: body.query,
+        mode: body.retrievalMode ?? body.mode,
+        topK: body.topK,
+        candidateCount: body.candidateCount,
+        similarityThreshold: body.similarityThreshold,
+        rrfK: body.rrfK,
+        metadataFilter: body.metadataFilter,
       });
 
       return reply.status(200).send(result);

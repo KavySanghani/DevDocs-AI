@@ -1,6 +1,6 @@
 import { getEnv } from '../../config/env.js';
 import type { EmbeddingProvider } from '../ingestion/types.js';
-import { searchSimilarChunks } from '../retrieval/vectorSearch.js';
+import { searchHybridChunks } from '../retrieval/hybridSearch.js';
 import { createLLMProvider } from './groqProvider.js';
 import { buildRAGPrompt } from './promptBuilder.js';
 import type { LLMProvider, RAGQueryParams, RAGQueryResult } from './types.js';
@@ -14,7 +14,7 @@ export interface RAGServiceOptions {
  * End-to-end grounded RAG answering service.
  *
  * Workflow:
- * 1. Semantic retrieval of top-K chunks scoped strictly to the authorized tenant.
+ * 1. Hybrid retrieval (vector + lexical with RRF fusion) of top-K chunks scoped strictly to the authorized tenant.
  * 2. If no chunks found, returns safe insufficient-evidence result without invoking LLM.
  * 3. Builds a bounded prompt with anti-prompt-injection security instructions.
  * 4. Calls configured Groq LLM (or mock provider in test/offline mode).
@@ -26,11 +26,12 @@ export async function queryRAG(
 ): Promise<RAGQueryResult> {
   const env = getEnv();
 
-  // 1. Vector Search across tenant-scoped document chunks
-  const retrievalResult = await searchSimilarChunks(
+  // 1. Hybrid Search across tenant-scoped document chunks (defaulting to hybrid)
+  const retrievalResult = await searchHybridChunks(
     {
       organizationId: params.organizationId,
       query: params.query,
+      mode: params.mode ?? 'hybrid',
       topK: params.topK,
       documentId: params.documentId,
     },

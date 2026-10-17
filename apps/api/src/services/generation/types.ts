@@ -30,6 +30,7 @@ export class LLMError extends Error {
 export interface RAGQueryParams {
   organizationId: string;
   query: string;
+  mode?: import('@devdocs/shared').RetrievalMode | undefined;
   topK?: number | undefined;
   documentId?: string | undefined;
   maxContextChars?: number | undefined;

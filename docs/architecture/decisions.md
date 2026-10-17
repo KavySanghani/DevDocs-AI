@@ -280,3 +280,52 @@ This document records the architectural decisions, trade-offs, and rationale ado
      - Redacts `gsk_...` keys, `sk-...` keys, and `Bearer` tokens from all error outputs.
      - `MockLLMProvider` generates deterministic grounded answers for test suites and offline environments, guaranteeing reproducible tests without live Groq API keys.
      - When retrieval yields zero candidates, `queryRAG` returns early with an insufficient-evidence response without making an unnecessary external LLM call.
+
+---
+
+## 2026-10-17 — Decision 007: Hybrid Search, PostgreSQL Full-Text Search, and Reciprocal Rank Fusion (RRF)
+
+- **Context**: In Phase 7, retrieval quality must be enhanced by combining semantic vector search with PostgreSQL lexical full-text search, and fusing the multi-retriever candidate rankings deterministically. Technical queries frequently contain exact API route names (e.g. `/api/documents/:id/ingest`), code function/variable identifiers (e.g. `calculateTaxAmount`), error codes (e.g. `ERR_PAYMENT_FAILED`), and file paths that semantic embeddings can blur. Conversely, conceptual and synonym queries require semantic vector distance. A unified hybrid search architecture must combine both methods without adding external search engines (e.g., Elasticsearch, Meilisearch).
+- **Decision**:
+  1. **PostgreSQL Lexical Full-Text Search via tsvector and GIN**:
+     - Utilizes the stored generated column `search_vector tsvector GENERATED ALWAYS AS (to_tsvector('english', content)) STORED` and its GIN index `idx_chunks_search_vector` defined in migration `002_create_initial_schema.sql`.
+     - Maintains 100% consistency with stored chunk text automatically without out-of-band indexing jobs.
+     - Lexical queries use `websearch_to_tsquery('english', $1)` to support natural syntax, unquoted words, exact phrases in quotes (`"..."`), and Boolean `OR` / negation syntax.
+     - Evaluates relevance ranking with PostgreSQL cover density ranking `ts_rank_cd(c.search_vector, query_ts)` to prefer proximity and density of matching terms.
+     - Fallback mechanism: if strict multi-word search yields 0 candidates and contains no quotes/operators, a secondary pass transforms terms with `OR` to rank partially matching candidates gracefully.
+  2. **Reciprocal Rank Fusion (RRF) Algorithm**:
+     - Deterministic multi-list rank fusion based on Cormack et al. (SIGIR 2009):
+       $$\text{RRF}(c) = \sum_{m \in \{\text{vector}, \text{lexical}\}} \frac{1}{k + \text{rank}_m(c)}$$
+     - Smoothing constant $k = 60$ (`DEFAULT_RRF_K`), the canonical default across search engines (Lucene, Elasticsearch, Azure Cognitive Search).
+     - Derives fused relevance strictly from candidate rankings rather than combining uncalibrated heterogeneous probabilities.
+     - Deduplicates chunks occurring in both retrieval lists, boosting candidates that match both semantically and lexically.
+     - Deterministic tie-breaking order: `rrfScore DESC`, `bestRank ASC` (`min(vectorRank, lexicalRank)`), `vectorScore DESC`, `lexicalScore DESC`, `chunkId ASC`.
+  3. **Diagnostic Observability & Provenance**:
+     - Preserves each retriever's individual rank and score on returned chunks:
+       - `vectorRank`: 1-based rank in vector search, or `null`.
+       - `vectorScore`: Cosine similarity score (`1 - distance`), or `null`.
+       - `lexicalRank`: 1-based rank in lexical search, or `null`.
+       - `lexicalScore`: Cover density score (`ts_rank_cd`), or `null`.
+       - `rrfScore`: Fused RRF score.
+       - `rank`: Final 1-based rank in the fused list.
+     - Granular latency tracking: separates `embeddingMs`, `retrievalMs`, `fusionMs`, and `totalMs`.
+  4. **Multi-Tenant Security & Version Visibility**:
+     - Both vector and lexical SQL queries enforce strict parameterized tenant isolation:
+       - `d.organization_id = $orgId`
+       - `dv.status = 'ready'`
+       - `dv.id = d.current_version_id`
+       - Optional `d.id = $docId` (document-scoped filtering)
+       - Optional `c.metadata @> $metadataFilter::jsonb` (JSONB containment filtering)
+     - Unauthorized tenants cannot retrieve any chunks regardless of query mode or keyword exactness.
+  5. **Retrieval Modes & Search Endpoints**:
+     - Supports three operational modes: `hybrid` (default), `vector`, and `keyword`.
+     - Endpoints:
+       - `POST /api/search`: Primary unified search API requiring JWT authentication and viewer-or-higher organization access.
+       - `POST /api/organizations/:orgId/search`: Organization-scoped search (defaults to `hybrid`, supports `mode`).
+       - `POST /api/organizations/:orgId/retrieval/vector`: Dedicated vector search endpoint for benchmarks.
+       - `POST /api/documents/:id/search`: Document-scoped hybrid search.
+     - RAG answering (`queryRAG`) defaults to `hybrid` retrieval, combining keyword precision with semantic grounding.
+- **Consequences**:
+  - No new external services or databases added; PostgreSQL handles vectors, full-text indexes, and relational data in a single transactional engine.
+  - Sub-millisecond RRF fusion with zero external API calls.
+  - High recall across both natural language questions and exact technical tokens.

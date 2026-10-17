@@ -263,8 +263,11 @@ export const IngestionResultSchema = z.object({
 export type IngestionResult = z.infer<typeof IngestionResultSchema>;
 
 // ==============================================================================
-// Vector Search & Retrieval Schemas (Phase 6)
+// Vector Search & Retrieval Schemas (Phase 6) & Hybrid Search / RRF (Phase 7)
 // ==============================================================================
+
+export const RetrievalModeSchema = z.enum(['hybrid', 'vector', 'keyword']);
+export type RetrievalMode = z.infer<typeof RetrievalModeSchema>;
 
 export const RetrievedChunkSchema = z.object({
   id: z.string().uuid(),
@@ -280,10 +283,17 @@ export const RetrievedChunkSchema = z.object({
   filePath: z.string().nullable().optional(),
   lineStart: z.number().int().nullable().optional(),
   lineEnd: z.number().int().nullable().optional(),
-  similarityScore: z.number(),
-  distance: z.number(),
+  similarityScore: z.number().optional(),
+  distance: z.number().optional(),
   rank: z.number().int().min(1),
   metadata: z.record(z.unknown()).optional(),
+  // Phase 7 diagnostics
+  score: z.number().optional(),
+  vectorRank: z.number().int().min(1).nullable().optional(),
+  vectorScore: z.number().nullable().optional(),
+  lexicalRank: z.number().int().min(1).nullable().optional(),
+  lexicalScore: z.number().nullable().optional(),
+  rrfScore: z.number().nullable().optional(),
 });
 export type RetrievedChunk = z.infer<typeof RetrievedChunkSchema>;
 
@@ -291,6 +301,7 @@ export const RetrievalLatencyBreakdownSchema = z.object({
   embeddingMs: z.number().min(0),
   retrievalMs: z.number().min(0),
   generationMs: z.number().min(0).optional(),
+  fusionMs: z.number().min(0).optional(),
   totalMs: z.number().min(0),
 });
 export type RetrievalLatencyBreakdown = z.infer<typeof RetrievalLatencyBreakdownSchema>;
@@ -316,12 +327,42 @@ export const VectorSearchResponseSchema = z.object({
 });
 export type VectorSearchResponse = z.infer<typeof VectorSearchResponseSchema>;
 
+export const SearchRequestSchema = z.object({
+  query: z
+    .string()
+    .min(1, 'Query must not be empty')
+    .max(2000, 'Query exceeds 2000 character limit')
+    .transform((q) => q.trim()),
+  organizationId: z.string().uuid().optional(),
+  mode: RetrievalModeSchema.default('hybrid'),
+  retrievalMode: RetrievalModeSchema.optional(),
+  topK: z.coerce.number().int().min(1).max(50).default(5),
+  candidateCount: z.coerce.number().int().min(1).max(100).default(20),
+  documentId: z.string().uuid().optional(),
+  similarityThreshold: z.coerce.number().min(0).max(1).optional(),
+  rrfK: z.coerce.number().int().min(1).max(500).default(60),
+  metadataFilter: z.record(z.unknown()).optional(),
+});
+export type SearchRequest = z.infer<typeof SearchRequestSchema>;
+
+export const SearchResponseSchema = z.object({
+  query: z.string(),
+  mode: RetrievalModeSchema,
+  chunks: z.array(RetrievedChunkSchema),
+  totalCandidates: z.number().int().min(0),
+  embeddingModel: z.string().optional(),
+  rrfK: z.number().int().optional(),
+  latency: RetrievalLatencyBreakdownSchema,
+});
+export type SearchResponse = z.infer<typeof SearchResponseSchema>;
+
 export const RAGQueryRequestSchema = z.object({
   query: z
     .string()
     .min(1, 'Query must not be empty')
     .max(2000, 'Query exceeds 2000 character limit')
     .transform((q) => q.trim()),
+  mode: RetrievalModeSchema.default('hybrid').optional(),
   topK: z.coerce.number().int().min(1).max(20).default(5),
   documentId: z.string().uuid().optional(),
   maxContextChars: z.coerce.number().int().min(500).max(50000).optional(),

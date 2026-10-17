@@ -6,6 +6,7 @@ import {
   CreateOrganizationRequestSchema,
   UpdateMemberRoleRequestSchema,
   VectorSearchRequestSchema,
+  SearchRequestSchema,
   RAGQueryRequestSchema,
 } from '@devdocs/shared';
 import { authenticate, requireOrgRole } from '../middleware/auth.js';
@@ -20,7 +21,7 @@ import {
   updateMemberRole,
 } from '../services/organizationService.js';
 import { uploadAndProcessDocument } from '../services/documentService.js';
-import { searchSimilarChunks, RetrievalError } from '../services/retrieval/index.js';
+import { searchSimilarChunks, searchHybridChunks, RetrievalError } from '../services/retrieval/index.js';
 import { queryRAG, LLMError } from '../services/generation/index.js';
 
 interface OrgParams {
@@ -391,7 +392,7 @@ export async function organizationRoutes(app: FastifyInstance): Promise<void> {
     }
   );
 
-  // POST /:orgId/search & POST /:orgId/retrieval/vector - Semantic vector search
+  // POST /:orgId/retrieval/vector - Dedicated semantic vector search
   const handleVectorSearch = async (
     request: FastifyRequest<{ Params: OrgParams }>,
     reply: FastifyReply
@@ -431,10 +432,58 @@ export async function organizationRoutes(app: FastifyInstance): Promise<void> {
     }
   };
 
+  // POST /:orgId/search - Unified hybrid/keyword/vector search (defaults to hybrid)
+  const handleHybridSearch = async (
+    request: FastifyRequest<{ Params: OrgParams }>,
+    reply: FastifyReply
+  ) => {
+    const parseResult = SearchRequestSchema.safeParse(request.body);
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid search parameters',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    try {
+      const body = parseResult.data;
+      const result = await searchHybridChunks({
+        organizationId: request.params.orgId,
+        query: body.query,
+        mode: body.retrievalMode ?? body.mode,
+        topK: body.topK,
+        candidateCount: body.candidateCount,
+        documentId: body.documentId,
+        similarityThreshold: body.similarityThreshold,
+        rrfK: body.rrfK,
+        metadataFilter: body.metadataFilter,
+      });
+
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof RetrievalError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  };
+
   app.post<{ Params: OrgParams }>(
     '/:orgId/search',
     { preHandler: [requireOrgRole('viewer')] },
-    handleVectorSearch
+    handleHybridSearch
   );
 
   app.post<{ Params: OrgParams }>(

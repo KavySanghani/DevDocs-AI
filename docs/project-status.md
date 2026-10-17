@@ -215,17 +215,54 @@ Last Updated: Phase 06 Completion Checkpoint
 
 ---
 
-## 7. Known Gaps & Deferred Items
+## 7. Phase 07 Verification & Evidence
 
-The following items are intentionally deferred to subsequent phases:
-1. **Hybrid Retrieval & Rank Fusion**: PostgreSQL full-text search (tsvector/GIN) combined with vector search via Reciprocal Rank Fusion (RRF) scheduled for **Phase 07**.
-2. **Grounded Chat & Citations**: Multi-turn chat sessions, citation validation against source chunk IDs, and source viewer scheduled for **Phase 08**.
-3. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
-4. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+### Criteria Verified
+- [x] PostgreSQL Lexical Full-Text Search:
+  - Leverages stored generated tsvector column `search_vector` on `chunks` and GIN index `idx_chunks_search_vector`.
+  - Supports exact API route names (`POST /api/documents/:id/ingest`), technical function/variable identifiers (`calculateTaxAmount`), error codes (`ERR_PAYMENT_FAILED`), and file paths.
+  - Queries powered by `websearch_to_tsquery('english', $1)` supporting exact phrases in quotes (`"..."`), unquoted terms, and Boolean `OR` syntax.
+  - Relevancy scored with PostgreSQL cover density ranking `ts_rank_cd(c.search_vector, query_ts)`.
+  - Graceful fallback: multi-word queries without matches fall back to `OR` terms to prevent artificial zero-candidate drop-offs.
+  - Multi-tenant isolation: strict `d.organization_id = $orgId` and `dv.status = 'ready' AND dv.id = d.current_version_id`.
+- [x] Deterministic Reciprocal Rank Fusion (RRF):
+  - Pure algorithmic implementation deriving fused relevance from candidate rankings: $\sum \frac{1}{k + \text{rank}}$.
+  - Standard literature smoothing constant $k = 60$ (`DEFAULT_RRF_K`).
+  - Strict deduplication of chunk IDs across retriever lists; dual-source matches receive combined score boosts.
+  - Deterministic 5-tier tie-breaking: `rrfScore DESC`, `bestRank ASC`, `vectorScore DESC`, `lexicalScore DESC`, `chunkId ASC`.
+  - Full diagnostic preservation: each retrieved chunk returns `rank`, `score`, `rrfScore`, `vectorRank`, `vectorScore`, `lexicalRank`, and `lexicalScore`.
+- [x] Unified Hybrid Search Service:
+  - Supports three operational modes: `hybrid` (default), `vector`, and `keyword`.
+  - Configurable `topK` (1–50, default 5) and candidate pool `candidateCount` (topK to 100, default 20).
+  - Parallel dual-retriever execution via `Promise.all` in hybrid mode.
+  - JSONB metadata containment filtering (`metadataFilter`).
+  - Granular latency breakdown: `embeddingMs`, `retrievalMs`, `fusionMs`, and `totalMs`.
+- [x] Grounded RAG Integration:
+  - `queryRAG` updated to default to `hybrid` retrieval, combining keyword precision with semantic breadth.
+- [x] API Endpoints:
+  - `POST /api/search`: Primary unified search API with JWT authentication and organization RBAC (`requireOrgRole('viewer')`).
+  - `POST /api/organizations/:orgId/search`: Organization-scoped hybrid search (supports `mode`, defaults to `hybrid`).
+  - `POST /api/organizations/:orgId/retrieval/vector`: Dedicated vector search endpoint for retrieval benchmarks.
+  - `POST /api/documents/:id/search`: Document-scoped hybrid search.
+- [x] Comprehensive Automated Tests:
+  - 8 RRF algorithm unit tests covering formula, deduplication, ties, diagnostics, custom $k$, and validation (`apps/api/tests/rrf.test.ts`).
+  - 24 end-to-end integration tests on real PostgreSQL test DB covering routes, functions, error codes, RRF fusion, tenant isolation, version filtering, metadata filtering, input validation, and API routes (`apps/api/tests/hybridSearch.test.ts`).
+  - **226 total monorepo tests passing** with 1 opt-in live test skipped and 0 failures.
+- [x] Zero dependency vulnerabilities (`npm audit` reports 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, and lint passing cleanly with exit code 0.
 
 ---
 
-## 8. Next Step
+## 8. Known Gaps & Deferred Items
 
-Vector similarity search, HNSW indexing, bounded context prompt construction, Groq LLM generation, and Fastify search/query API endpoints are fully implemented and verified.
-**Status**: Ready for **Instruction 07 — Hybrid Retrieval and Rank Fusion**.
+The following items are intentionally deferred to subsequent phases:
+1. **Grounded Chat & Citations**: Multi-turn chat sessions, citation validation against source chunk IDs, and source viewer scheduled for **Phase 08**.
+2. **Document Versions & Reindex**: Multi-version comparison and branch diffing scheduled for **Phase 09**.
+3. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
+
+---
+
+## 9. Next Step
+
+Hybrid search, PostgreSQL full-text search, Reciprocal Rank Fusion, diagnostics, and Fastify search API endpoints are fully implemented and verified.
+**Status**: Ready for **Instruction 08 — Grounded Chat and Citations**.
