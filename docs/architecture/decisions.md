@@ -376,3 +376,51 @@ This document records the architectural decisions, trade-offs, and rationale ado
   - Eliminates citation hallucinations and broken UI links.
   - Preserves full auditability by linking every assistant answer to the exact retrieved chunks, `retrieval_runs`, and `retrieval_results`.
   - Resilient to LLM prompt injection attacks contained inside indexed user documents.
+
+---
+
+## 2026-10-17 — Decision 009: Document Versioning, Safe Re-indexing, Diff Engine, and Deletion Provenance
+
+- **Status**: Accepted
+- **Context**: In Phase 9, DevDocs AI requires document version management, idempotent re-indexing, textual diffing between versions, and safe deletion. In a collaborative technical documentation repository, documents undergo continuous iteration. A production system must:
+  1. Maintain document identity while storing immutable version snapshots (`document_versions`).
+  2. Prevent unintentional duplicate uploads while supporting new versions when content changes.
+  3. Ensure re-indexing is atomic and idempotent, eliminating orphaned or duplicated chunks.
+  4. Isolate retrieval to only the current active version by default so stale versions do not poison RAG search results.
+  5. Provide line-level diffing between versions (LCS-based unified diff and summary statistics).
+  6. Preserve historical citation provenance when documents or versions are deleted (tombstone preservation).
+  7. Enforce strict RBAC and tenant isolation on all versioning, reindexing, and deletion endpoints.
+- **Decision**:
+  1. **Multi-Version Document Lifecycle & Content Deduplication**:
+     - Documents have a primary record in `documents` with pointer `current_version_id`.
+     - Each version is stored as an immutable row in `document_versions` with sequence `version_number` ($1, 2, 3, \dots$), `content_hash` (SHA-256), `status` (`queued`, `processing`, `ready`, `failed`), and `source_details`.
+     - Deduplication: Uploading identical content to an existing document returns 409 `DUPLICATE_VERSION` with existing document and version details. Uploading changed content creates the next sequential version.
+     - **Transaction-Scoped Row Locking for Concurrency Safety (F-01)**: Simultaneous uploads for the same document are serialized using `SELECT id, organization_id FROM documents WHERE id = $1 AND organization_id = $2 FOR UPDATE` within a database transaction. Under the lock, duplicate content (SHA-256) is checked and the next sequential version number (`COALESCE(MAX(version_number), 0) + 1`) is allocated and inserted in `processing` status before committing. Long-running parsing, chunking, and embedding generation remain asynchronous outside the transaction, preventing connection starvation while eliminating PostgreSQL 23505 race conditions.
+     - **Monotonic Conditional Pointer Activation (F-04)**: Automatic version activation upon ingestion completion uses an atomic conditional SQL update: `UPDATE documents d SET current_version_id = new_v.id, updated_at = now() FROM document_versions new_v WHERE d.id = $2 AND new_v.id = $1 AND new_v.document_id = d.id AND new_v.status = 'ready' AND (d.current_version_id IS NULL OR new_v.version_number >= (SELECT cur_v.version_number FROM document_versions cur_v WHERE cur_v.id = d.current_version_id))`. This guarantees that if concurrent or rapid uploads complete out of order, a slower older version can never overwrite a newer version that has already become current.
+     - **Explicit Version Activation & Rollback**: `POST /api/documents/:id/versions/:versionId/activate` allows authorized Members and Admins to deliberately activate any historical version in `ready` status without monotonic version-number restrictions, enabling instant manual rollbacks.
+  2. **Safe & Idempotent Re-indexing**:
+     - Endpoint: `POST /api/documents/:id/reindex` (with `POST /api/documents/:id/ingest` maintained as backward-compatible alias).
+     - Allows optional `versionId` (defaults to `current_version_id`) and custom chunking overrides.
+     - Within an atomic database transaction in `ingestDocumentVersion`, existing chunks for that `document_version_id` are purged before new chunks and embeddings are inserted.
+     - On failure, `status` is set to `failed` with `error_message`, and `documents.current_version_id` is never updated to an unready version.
+  3. **Retrieval Version Isolation**:
+     - `searchVectorChunks`, `searchLexicalChunks`, and `searchHybridChunks` enforce `AND dv.id = d.current_version_id AND dv.status = 'ready'` by default.
+     - Stale historical versions are never returned in search queries unless explicitly scoped with `versionId`.
+  4. **Line-Level Diff Engine (`documentDiff.ts`)**:
+     - Pure TypeScript Longest Common Subsequence (LCS) diffing algorithm.
+     - Endpoint: `GET /api/documents/:id/diff?fromVersion=1&toVersion=2`.
+     - Computes `isContentIdentical`, `linesAdded`, `linesRemoved`, `linesUnchanged`, `characterCountDelta`, `chunkCountDelta`, unified diff string (`--- v1 / +++ v2`), structured `chunks`, and section comparison.
+  5. **Document Deletion & Citation Provenance Tombstone**:
+     - Endpoint: `DELETE /api/documents/:id` (restricted to Admin role).
+     - Cascades deletion of document, versions, and chunks.
+     - When documents or chunks are deleted, `citations` records are retained in PostgreSQL (`ON DELETE SET NULL` on `chunk_id` and `document_id`).
+     - Citation queries map null chunk/document references to `sourceDeleted: true`, preserving the original `document_name`, `snippet`, `citation_number`, and `section_title` in historical chat sessions without dangling foreign keys.
+  6. **Role Permissions & Tenant Isolation**:
+     - Viewers are forbidden (403) from uploading versions, activating versions, re-indexing, or deleting documents.
+     - Members and Admins can upload versions, re-index, and activate versions.
+     - Admins only can delete documents.
+     - Cross-tenant requests return 404 (`DOCUMENT_NOT_FOUND`) to prevent resource enumeration.
+- **Consequences**:
+  - Full version audit trail and rollback capabilities.
+  - Zero duplicate chunks during re-indexing retries.
+  - Historical chat logs remain readable and citeable even after source documents are updated or pruned.

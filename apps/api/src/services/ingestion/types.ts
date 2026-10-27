@@ -66,7 +66,13 @@ export interface IngestDocumentParams {
   documentVersionId?: string | undefined;
   organizationId: string;
   provider?: EmbeddingProvider | undefined;
-  config?: Partial<ChunkingConfig> | undefined;
+  config?:
+    | {
+        maxChunkSizeChars?: number | undefined;
+        chunkOverlapChars?: number | undefined;
+        minChunkSizeChars?: number | undefined;
+      }
+    | undefined;
 }
 
 export type { IngestionResult };

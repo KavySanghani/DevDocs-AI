@@ -216,13 +216,13 @@ export async function getChatSession(
     );
 
     for (const c of citeRes.rows) {
-      if (!c.chunk_id || !c.document_id) continue;
+      const sourceDeleted = !c.chunk_id || !c.document_id;
       const list = citationsByMessageId.get(c.message_id) ?? [];
       list.push({
         id: c.id,
         citationNumber: c.citation_number,
-        chunkId: c.chunk_id,
-        documentId: c.document_id,
+        chunkId: c.chunk_id ?? undefined,
+        documentId: c.document_id ?? undefined,
         documentName: c.document_name,
         pageNumber: c.page_number,
         sectionTitle: c.section_title,
@@ -230,6 +230,7 @@ export async function getChatSession(
         lineStart: c.line_start,
         lineEnd: c.line_end,
         snippet: c.snippet,
+        sourceDeleted: sourceDeleted ? true : undefined,
       });
       citationsByMessageId.set(c.message_id, list);
     }

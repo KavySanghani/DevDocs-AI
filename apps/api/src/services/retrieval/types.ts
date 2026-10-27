@@ -11,6 +11,7 @@ export interface VectorSearchParams {
   query: string;
   topK?: number | undefined;
   documentId?: string | undefined;
+  versionId?: string | undefined;
   similarityThreshold?: number | undefined;
   metadataFilter?: Record<string, unknown> | undefined;
 }
@@ -28,6 +29,7 @@ export interface LexicalSearchParams {
   query: string;
   topK?: number | undefined;
   documentId?: string | undefined;
+  versionId?: string | undefined;
   metadataFilter?: Record<string, unknown> | undefined;
 }
 
@@ -48,6 +50,7 @@ export interface HybridSearchParams {
   topK?: number | undefined;
   candidateCount?: number | undefined;
   documentId?: string | undefined;
+  versionId?: string | undefined;
   similarityThreshold?: number | undefined;
   rrfK?: number | undefined;
   metadataFilter?: Record<string, unknown> | undefined;

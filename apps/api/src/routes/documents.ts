@@ -1,6 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import {
   DocumentListQuerySchema,
+  DocumentDiffQuerySchema,
+  DocumentReindexRequestSchema,
   hasMinimumRole,
   SearchRequestSchema,
   RAGQueryRequestSchema,
@@ -9,17 +11,19 @@ import { getEnv } from '../config/env.js';
 import { authenticate } from '../middleware/auth.js';
 import { getOrganizationMember } from '../services/organizationService.js';
 import {
+  activateDocumentVersion,
   deleteDocument,
   DocError,
   getDocumentById,
   listDocuments,
+  listDocumentVersions,
+  reindexDocument,
   uploadAndProcessDocument,
 } from '../services/documentService.js';
+import { compareDocumentVersions } from '../services/documentDiff.js';
 import { ValidationError } from '../services/documentValidation.js';
 import {
   getPersistedChunks,
-  ingestDocumentVersion,
-  IngestionError,
 } from '../services/ingestion/index.js';
 import { searchHybridChunks, RetrievalError } from '../services/retrieval/index.js';
 import { queryRAG, LLMError } from '../services/generation/index.js';
@@ -28,11 +32,16 @@ interface DocParams {
   id: string;
 }
 
+interface VersionParams {
+  id: string;
+  versionId: string;
+}
+
 export async function documentRoutes(app: FastifyInstance): Promise<void> {
   // All document routes require authentication
   app.addHook('preHandler', authenticate);
 
-  // POST / - Upload and process a document
+  // POST / - Upload and process a new document (or new version if documentId is provided)
   app.post('/', async (request: FastifyRequest, reply: FastifyReply) => {
     const env = getEnv();
 
@@ -80,10 +89,13 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     const fields = uploadData.fields as Record<string, { value?: string }>;
     const formOrgId = fields.organizationId?.value;
     const customName = fields.name?.value;
+    const formDocId = fields.documentId?.value;
     const headerOrgId = request.headers['x-organization-id'] as string | undefined;
+    const headerDocId = request.headers['x-document-id'] as string | undefined;
     const queryOrgId = (request.query as { organizationId?: string })?.organizationId;
 
     const organizationId = formOrgId || headerOrgId || queryOrgId;
+    const documentId = formDocId || headerDocId;
 
     if (!organizationId) {
       return reply.status(400).send({
@@ -159,9 +171,152 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         declaredMimeType: uploadData.mimetype,
         customName,
         maxSizeBytes: env.MAX_FILE_SIZE_BYTES,
+        documentId,
       });
 
       return reply.status(201).send({ document });
+    } catch (err) {
+      if (err instanceof ValidationError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+            details: err.details,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/versions - Upload a new version for an existing document
+  app.post<{ Params: DocParams }>('/:id/versions', async (request: FastifyRequest<{ Params: DocParams }>, reply: FastifyReply) => {
+    const env = getEnv();
+
+    if (!request.isMultipart()) {
+      return reply.status(400).send({
+        error: {
+          code: 'INVALID_CONTENT_TYPE',
+          message: 'Expected multipart/form-data content type for file upload.',
+          statusCode: 400,
+          requestId: request.id,
+        },
+      });
+    }
+
+    // Verify document exists and caller has access
+    let doc;
+    try {
+      doc = await getDocumentById(request.params.id, request.user!.userId);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+
+    // Verify caller role in the document's organization
+    const member = await getOrganizationMember(doc.organizationId, request.user!.userId);
+    if (!member || !hasMinimumRole(member.role, 'member')) {
+      return reply.status(403).send({
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Insufficient permissions. Uploading a new document version requires Member role or higher.',
+          statusCode: 403,
+          requestId: request.id,
+        },
+      });
+    }
+
+    let uploadData;
+    try {
+      uploadData = await request.file();
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string; message?: string };
+      if (errorObj.code === 'FST_REQ_FILE_TOO_LARGE') {
+        return reply.status(413).send({
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: `File size exceeds maximum allowed limit of ${(env.MAX_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(1)} MB.`,
+            statusCode: 413,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+
+    if (!uploadData) {
+      return reply.status(400).send({
+        error: {
+          code: 'MISSING_FILE',
+          message: 'No file provided in multipart upload (field "file" required).',
+          statusCode: 400,
+          requestId: request.id,
+        },
+      });
+    }
+
+    let buffer: Buffer;
+    try {
+      buffer = await uploadData.toBuffer();
+    } catch (err: unknown) {
+      const errorObj = err as { code?: string };
+      if (errorObj.code === 'FST_REQ_FILE_TOO_LARGE' || uploadData.file.truncated) {
+        return reply.status(413).send({
+          error: {
+            code: 'FILE_TOO_LARGE',
+            message: `File size exceeds maximum allowed limit of ${(env.MAX_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(1)} MB.`,
+            statusCode: 413,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+
+    if (uploadData.file.truncated) {
+      return reply.status(413).send({
+        error: {
+          code: 'FILE_TOO_LARGE',
+          message: `File size exceeds maximum allowed limit of ${(env.MAX_FILE_SIZE_BYTES / (1024 * 1024)).toFixed(1)} MB.`,
+          statusCode: 413,
+          requestId: request.id,
+        },
+      });
+    }
+
+    try {
+      const updatedDocument = await uploadAndProcessDocument({
+        organizationId: doc.organizationId,
+        userId: request.user!.userId,
+        filename: uploadData.filename,
+        buffer,
+        declaredMimeType: uploadData.mimetype,
+        maxSizeBytes: env.MAX_FILE_SIZE_BYTES,
+        documentId: doc.id,
+      });
+
+      return reply.status(201).send({ document: updatedDocument });
     } catch (err) {
       if (err instanceof ValidationError) {
         return reply.status(err.statusCode).send({
@@ -243,11 +398,226 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(200).send(result);
   });
 
-  // GET /:id - Retrieve safe metadata and processing status of a document
+  // GET /:id - Retrieve safe metadata, processing status, and version history of a document
   app.get<{ Params: DocParams }>('/:id', async (request: FastifyRequest<{ Params: DocParams }>, reply: FastifyReply) => {
     try {
       const document = await getDocumentById(request.params.id, request.user!.userId);
       return reply.status(200).send({ document });
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // GET /:id/versions - List all versions for a document
+  app.get<{ Params: DocParams }>('/:id/versions', async (request: FastifyRequest<{ Params: DocParams }>, reply: FastifyReply) => {
+    try {
+      const result = await listDocumentVersions(request.params.id, request.user!.userId);
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/versions/:versionId/activate - Activate a ready version
+  app.post<{ Params: VersionParams }>('/:id/versions/:versionId/activate', async (request: FastifyRequest<{ Params: VersionParams }>, reply: FastifyReply) => {
+    try {
+      const result = await activateDocumentVersion({
+        documentId: request.params.id,
+        versionId: request.params.versionId,
+        callerUserId: request.user!.userId,
+      });
+      return reply.status(200).send(result);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/reindex - Re-index a specific or current version of a document
+  app.post<{
+    Params: DocParams;
+    Body: {
+      versionId?: string;
+      config?: {
+        maxChunkSizeChars?: number;
+        chunkOverlapChars?: number;
+        minChunkSizeChars?: number;
+      };
+    };
+  }>('/:id/reindex', async (request, reply) => {
+    const parseResult = DocumentReindexRequestSchema.safeParse(request.body ?? {});
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid reindex request body',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    try {
+      const result = await reindexDocument({
+        documentId: request.params.id,
+        versionId: parseResult.data.versionId,
+        callerUserId: request.user!.userId,
+        config: parseResult.data.config,
+      });
+
+      return reply.status(200).send({ reindex: result });
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+            details: err.details,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // POST /:id/ingest - Legacy alias for re-indexing a document version
+  app.post<{
+    Params: DocParams;
+    Body: {
+      versionId?: string;
+      config?: {
+        maxChunkSizeChars?: number;
+        chunkOverlapChars?: number;
+        minChunkSizeChars?: number;
+      };
+    };
+  }>('/:id/ingest', async (request, reply) => {
+    const parseResult = DocumentReindexRequestSchema.safeParse(request.body ?? {});
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid ingest request body',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    try {
+      const result = await reindexDocument({
+        documentId: request.params.id,
+        versionId: parseResult.data.versionId,
+        callerUserId: request.user!.userId,
+        config: parseResult.data.config,
+      });
+
+      return reply.status(200).send({
+        ingestion: {
+          documentId: result.documentId,
+          versionId: result.versionId,
+          status: result.status,
+          chunkCount: result.chunkCount,
+          totalCharacters: result.totalCharacters,
+          totalEstimatedTokens: result.totalEstimatedTokens,
+          embeddingModel: result.embeddingModel,
+          durationMs: 0,
+        },
+      });
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+            details: err.details,
+          },
+        });
+      }
+      throw err;
+    }
+  });
+
+  // GET /:id/diff - Compare two versions of a document
+  app.get<{
+    Params: DocParams;
+    Querystring: { fromVersion?: string; toVersion?: string };
+  }>('/:id/diff', async (request, reply) => {
+    const parseResult = DocumentDiffQuerySchema.safeParse(request.query ?? {});
+    if (!parseResult.success) {
+      return reply.status(400).send({
+        error: {
+          code: 'VALIDATION_ERROR',
+          message: 'Invalid diff query parameters',
+          statusCode: 400,
+          requestId: request.id,
+          details: parseResult.error.issues,
+        },
+      });
+    }
+
+    // Verify document exists and caller has read access (at least Viewer)
+    let doc;
+    try {
+      doc = await getDocumentById(request.params.id, request.user!.userId);
+    } catch (err) {
+      if (err instanceof DocError) {
+        return reply.status(err.statusCode).send({
+          error: {
+            code: err.code,
+            message: err.message,
+            statusCode: err.statusCode,
+            requestId: request.id,
+          },
+        });
+      }
+      throw err;
+    }
+
+    try {
+      const diffResult = await compareDocumentVersions({
+        documentId: doc.id,
+        organizationId: doc.organizationId,
+        fromVersion: parseResult.data.fromVersion,
+        toVersion: parseResult.data.toVersion,
+      });
+
+      return reply.status(200).send(diffResult);
     } catch (err) {
       if (err instanceof DocError) {
         return reply.status(err.statusCode).send({
@@ -348,81 +718,6 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
     }
   });
 
-  // POST /:id/ingest - Trigger or re-run ingestion for a document
-  app.post<{
-    Params: DocParams;
-    Body: {
-      versionId?: string;
-      config?: {
-        maxChunkSizeChars?: number;
-        chunkOverlapChars?: number;
-        minChunkSizeChars?: number;
-      };
-    };
-  }>('/:id/ingest', async (request, reply) => {
-    try {
-      const doc = await getDocumentById(request.params.id, request.user!.userId);
-
-      const member = await getOrganizationMember(doc.organizationId, request.user!.userId);
-      if (!member || !hasMinimumRole(member.role, 'member')) {
-        return reply.status(403).send({
-          error: {
-            code: 'FORBIDDEN',
-            message: 'Forbidden: Member role or higher is required to ingest documents.',
-            statusCode: 403,
-            requestId: request.id,
-          },
-        });
-      }
-
-      const versionId = request.body?.versionId || doc.currentVersionId;
-      if (!versionId) {
-        return reply.status(400).send({
-          error: {
-            code: 'NO_DOCUMENT_VERSION',
-            message: 'Document has no active version to ingest.',
-            statusCode: 400,
-            requestId: request.id,
-          },
-        });
-      }
-
-      const result = await ingestDocumentVersion({
-        documentId: doc.id,
-        documentVersionId: versionId,
-        organizationId: doc.organizationId,
-        ...(request.body?.config ? { config: request.body.config } : {}),
-      });
-
-      return reply.status(200).send({
-        ingestion: result,
-      });
-    } catch (err) {
-      if (err instanceof DocError) {
-        return reply.status(err.statusCode).send({
-          error: {
-            code: err.code,
-            message: err.message,
-            statusCode: err.statusCode,
-            requestId: request.id,
-          },
-        });
-      }
-      if (err instanceof IngestionError) {
-        return reply.status(err.statusCode).send({
-          error: {
-            code: 'INGESTION_FAILED',
-            message: err.message,
-            statusCode: err.statusCode,
-            stage: err.stage,
-            requestId: request.id,
-          },
-        });
-      }
-      throw err;
-    }
-  });
-
   // POST /:id/search - Unified hybrid/keyword/vector search within a specific document
   app.post<{ Params: DocParams }>('/:id/search', async (request, reply) => {
     try {
@@ -445,6 +740,7 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       const result = await searchHybridChunks({
         organizationId: doc.organizationId,
         documentId: doc.id,
+        versionId: body.versionId,
         query: body.query,
         mode: body.retrievalMode ?? body.mode,
         topK: body.topK,

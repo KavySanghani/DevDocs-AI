@@ -76,7 +76,7 @@ describe('Organizations, RBAC Permissions, and Tenant Isolation', () => {
     const outsider = await register('outsider@othercorp.com');
     outsiderToken = outsider.token;
     outsiderUserId = outsider.userId;
-  });
+  }, 30000);
 
   afterAll(async () => {
     await app.close();

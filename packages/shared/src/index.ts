@@ -170,6 +170,9 @@ export const DocumentVersionSummarySchema = z.object({
   contentHash: z.string(),
   status: DocumentStatusSchema,
   errorMessage: z.string().nullable().optional(),
+  chunkCount: z.number().int().optional(),
+  characterCount: z.number().int().optional(),
+  isCurrent: z.boolean().optional(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -190,6 +193,7 @@ export const DocumentResponseSchema = z.object({
 export type DocumentResponse = z.infer<typeof DocumentResponseSchema>;
 
 export const DocumentDetailResponseSchema = DocumentResponseSchema.extend({
+  versions: z.array(DocumentVersionSummarySchema).optional(),
   sourceDetails: z
     .object({
       originalFilename: z.string().optional(),
@@ -203,6 +207,96 @@ export const DocumentDetailResponseSchema = DocumentResponseSchema.extend({
     .optional(),
 });
 export type DocumentDetailResponse = z.infer<typeof DocumentDetailResponseSchema>;
+
+export const DocumentVersionListResponseSchema = z.object({
+  documentId: z.string().uuid(),
+  currentVersionId: z.string().uuid().nullable().optional(),
+  versions: z.array(DocumentVersionSummarySchema),
+});
+export type DocumentVersionListResponse = z.infer<typeof DocumentVersionListResponseSchema>;
+
+export const ActivateVersionResponseSchema = z.object({
+  success: z.boolean(),
+  documentId: z.string().uuid(),
+  previousVersionId: z.string().uuid().nullable().optional(),
+  currentVersionId: z.string().uuid(),
+  message: z.string(),
+});
+export type ActivateVersionResponse = z.infer<typeof ActivateVersionResponseSchema>;
+
+export const DocumentReindexRequestSchema = z.object({
+  versionId: z.string().uuid().optional(),
+  config: z
+    .object({
+      maxChunkSizeChars: z.number().int().positive().optional(),
+      chunkOverlapChars: z.number().int().min(0).optional(),
+      minChunkSizeChars: z.number().int().positive().optional(),
+    })
+    .optional(),
+});
+export type DocumentReindexRequest = z.infer<typeof DocumentReindexRequestSchema>;
+
+export const DocumentReindexResponseSchema = z.object({
+  success: z.boolean(),
+  documentId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  status: DocumentStatusSchema,
+  chunkCount: z.number().int(),
+  totalCharacters: z.number().int(),
+  totalEstimatedTokens: z.number().int(),
+  embeddingModel: z.string(),
+  reindexedAt: z.string(),
+});
+export type DocumentReindexResponse = z.infer<typeof DocumentReindexResponseSchema>;
+
+export const DocumentDiffQuerySchema = z.object({
+  fromVersion: z.string().optional(),
+  toVersion: z.string().optional(),
+});
+export type DocumentDiffQuery = z.infer<typeof DocumentDiffQuerySchema>;
+
+export const DiffChunkSchema = z.object({
+  type: z.enum(['added', 'removed', 'unchanged']),
+  text: z.string(),
+  lineStart: z.number().int().optional(),
+  lineEnd: z.number().int().optional(),
+});
+export type DiffChunk = z.infer<typeof DiffChunkSchema>;
+
+export const DocumentDiffResponseSchema = z.object({
+  documentId: z.string().uuid(),
+  documentName: z.string(),
+  fromVersion: z.object({
+    id: z.string().uuid(),
+    versionNumber: z.number().int(),
+    contentHash: z.string(),
+    status: DocumentStatusSchema,
+    createdAt: z.string(),
+  }),
+  toVersion: z.object({
+    id: z.string().uuid(),
+    versionNumber: z.number().int(),
+    contentHash: z.string(),
+    status: DocumentStatusSchema,
+    createdAt: z.string(),
+  }),
+  isContentIdentical: z.boolean(),
+  characterCountDelta: z.number().int(),
+  chunkCountDelta: z.number().int(),
+  linesAdded: z.number().int(),
+  linesRemoved: z.number().int(),
+  linesUnchanged: z.number().int(),
+  unifiedDiff: z.string(),
+  chunks: z.array(DiffChunkSchema),
+  sections: z
+    .object({
+      added: z.array(z.string()),
+      removed: z.array(z.string()),
+      unchanged: z.array(z.string()),
+    })
+    .optional(),
+});
+export type DocumentDiffResponse = z.infer<typeof DocumentDiffResponseSchema>;
 
 export const DocumentListQuerySchema = z.object({
   page: z.coerce.number().int().min(1).default(1),
@@ -314,6 +408,7 @@ export const VectorSearchRequestSchema = z.object({
     .transform((q) => q.trim()),
   topK: z.coerce.number().int().min(1).max(50).default(5),
   documentId: z.string().uuid().optional(),
+  versionId: z.string().uuid().optional(),
   similarityThreshold: z.coerce.number().min(0).max(1).optional(),
 });
 export type VectorSearchRequest = z.infer<typeof VectorSearchRequestSchema>;
@@ -339,6 +434,7 @@ export const SearchRequestSchema = z.object({
   topK: z.coerce.number().int().min(1).max(50).default(5),
   candidateCount: z.coerce.number().int().min(1).max(100).default(20),
   documentId: z.string().uuid().optional(),
+  versionId: z.string().uuid().optional(),
   similarityThreshold: z.coerce.number().min(0).max(1).optional(),
   rrfK: z.coerce.number().int().min(1).max(500).default(60),
   metadataFilter: z.record(z.unknown()).optional(),
@@ -391,8 +487,8 @@ export type ChatMessageRole = z.infer<typeof ChatMessageRoleSchema>;
 export const CitationResponseSchema = z.object({
   id: z.string().uuid().optional(),
   citationNumber: z.number().int().min(1),
-  chunkId: z.string().uuid(),
-  documentId: z.string().uuid(),
+  chunkId: z.string().uuid().nullable().optional(),
+  documentId: z.string().uuid().nullable().optional(),
   documentName: z.string(),
   pageNumber: z.number().int().nullable().optional(),
   sectionTitle: z.string().nullable().optional(),
@@ -400,6 +496,7 @@ export const CitationResponseSchema = z.object({
   lineStart: z.number().int().nullable().optional(),
   lineEnd: z.number().int().nullable().optional(),
   snippet: z.string().nullable().optional(),
+  sourceDeleted: z.boolean().optional(),
 });
 export type CitationResponse = z.infer<typeof CitationResponseSchema>;
 

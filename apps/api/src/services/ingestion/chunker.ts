@@ -20,7 +20,13 @@ export interface ChunkDocumentParams {
   sourceType: DocumentSourceType;
   rawText: string;
   sourceDetails?: Record<string, unknown> | undefined;
-  config?: Partial<ChunkingConfig> | undefined;
+  config?:
+    | {
+        maxChunkSizeChars?: number | undefined;
+        chunkOverlapChars?: number | undefined;
+        minChunkSizeChars?: number | undefined;
+      }
+    | undefined;
 }
 
 interface ParsedSectionInput {
@@ -43,8 +49,9 @@ interface ParsedPageInput {
 export function chunkDocument(params: ChunkDocumentParams): ChunkInput[] {
   const { documentName, sourceType, rawText, sourceDetails, config: userConfig } = params;
   const config: ChunkingConfig = {
-    ...DEFAULT_CHUNKING_CONFIG,
-    ...userConfig,
+    maxChunkSizeChars: userConfig?.maxChunkSizeChars ?? DEFAULT_CHUNKING_CONFIG.maxChunkSizeChars,
+    chunkOverlapChars: userConfig?.chunkOverlapChars ?? DEFAULT_CHUNKING_CONFIG.chunkOverlapChars,
+    minChunkSizeChars: userConfig?.minChunkSizeChars ?? DEFAULT_CHUNKING_CONFIG.minChunkSizeChars,
   };
 
   let rawChunks: Omit<ChunkInput, 'chunkIndex'>[] = [];

@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 08 Completion Checkpoint
+Last Updated: Phase 09 Completion Checkpoint
 
 ---
 
@@ -16,7 +16,7 @@ Last Updated: Phase 08 Completion Checkpoint
 | **06** | **Vector Search & Base RAG** | **COMPLETED** | pgvector cosine similarity retrieval, HNSW indexing, bounded context Groq LLM RAG, 186 monorepo tests passing |
 | **07** | **Hybrid Retrieval & Rank Fusion** | **COMPLETED** | PostgreSQL tsvector FTS + RRF rank fusion, hybrid search, 226 tests passing |
 | **08** | **Grounded Chat & Citations** | **COMPLETED** | Grounded chat sessions, bounded multi-turn history, citation validation, chunk source viewer, 262 tests passing |
-| 09 | Document Versions & Reindex | PENDING | Scheduled for Instruction 09 |
+| **09** | **Document Versions & Reindex** | **COMPLETED** | Immutable versions, deduplication policy, atomic reindex, LCS diff engine, row-lock concurrency & monotonic activation safety, 297 tests passing |
 | 10 | Async Worker & Retries | PENDING | Scheduled for Instruction 10 |
 | 11 | GitHub Codebase Ingestion | PENDING | Scheduled for Instruction 11 |
 | 12 | Frontend Workspace & Documents | PENDING | Scheduled for Instruction 12 |
@@ -293,17 +293,57 @@ Last Updated: Phase 08 Completion Checkpoint
 
 ---
 
-## 9. Known Gaps & Deferred Items
+## 9. Phase 09 Verification & Evidence
 
-The following items are intentionally deferred to subsequent phases:
-1. **Document Versions & Reindex**: Multi-version comparison, branch diffing, and reindex triggers scheduled for **Phase 09**.
-2. **Async Worker & Queue**: BullMQ and Redis deferred to **Phase 10**.
-3. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
-4. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
+### Criteria Verified
+- [x] Immutable Document Versions:
+  - Document records maintain identity across iterative edits with active `current_version_id`.
+  - Sequential versioning ($1, 2, 3, \dots$) tracked per document with SHA-256 `content_hash` and parsing/chunking status.
+  - Endpoints `GET /api/documents/:id` and `GET /api/documents/:id/versions` expose complete version history.
+- [x] Deduplication Policy & Concurrency Row Locking:
+  - Uploading identical content to an existing document returns HTTP 409 `DUPLICATE_VERSION` with version details.
+  - Uploading changed content triggers the processing pipeline and increments version number.
+  - Concurrent version uploads for the same document are serialized under a transaction-scoped row lock on the parent document (`SELECT ... FROM documents WHERE id = $1 AND organization_id = $2 FOR UPDATE`).
+  - Next version number calculation and initial `document_versions` record creation occur within the lock boundary, safely eliminating race conditions and PostgreSQL `23505` conflicts while keeping file parsing and embedding asynchronous.
+- [x] Safe & Idempotent Re-indexing:
+  - `POST /api/documents/:id/reindex` executes inside an atomic PostgreSQL transaction.
+  - Purges existing chunks for the target version before re-inserting newly generated chunks and embeddings.
+  - Idempotent: repeated re-indexing calls maintain exact chunk count without duplicates.
+  - Failure safety: pipeline errors mark `document_versions.status = 'failed'` without leaving the version in a falsely `ready` state or activating it as `current_version_id`.
+- [x] Retrieval Version Isolation:
+  - `searchVectorChunks`, `searchLexicalChunks`, and `searchHybridChunks` join with `dv.id = d.current_version_id AND dv.status = 'ready'`.
+  - Stale versions never pollute active RAG search queries.
+- [x] Line-Level Diff Engine (`documentDiff.ts`):
+  - Pure TypeScript Longest Common Subsequence (LCS) engine.
+  - `GET /api/documents/:id/diff?fromVersion=A&toVersion=B` calculates line-by-line diffs, unified diff strings, character/chunk count deltas, and section comparison.
+  - Handles identical versions, single-line modifications, additions, and deletions.
+- [x] Document Deletion & Citation Provenance:
+  - `DELETE /api/documents/:id` deletes document, versions, and chunks cleanly.
+  - PostgreSQL `ON DELETE SET NULL` on `citations` preserves historical chat citations with `sourceDeleted: true` tombstone marker.
+- [x] Role-Based Access Control & Tenant Isolation:
+  - Viewers forbidden (403) from uploading versions, activating versions, re-indexing, or deleting documents.
+  - Members/Admins can upload versions, re-index, and activate versions.
+  - Admins only can delete documents.
+  - Cross-tenant lookups and mutations return non-disclosing 404 (`DOCUMENT_NOT_FOUND`).
+- [x] Comprehensive Automated Tests:
+  - 35 tests in `apps/api/tests/documentVersions.test.ts` covering versioning, sequencing, deduplication, activation, reindexing, search isolation, diffing, RBAC, deletion provenance, real database concurrent version uploads (F-01), and out-of-order monotonic ingestion activation (F-04).
+  - **297 total monorepo tests passing** (45 in `@devdocs/db`, 5 in `@devdocs/shared`, 247 in `@devdocs/api`) with 1 opt-in test skipped and 0 failures.
+- [x] Dependency audit: 0 critical vulnerabilities (3 upstream advisories in existing dependencies: 1 low fastify, 1 moderate fast-uri, 1 high zod <4.6.6; breaking zod v4 upgrade deferred).
+- [x] Full monorepo typecheck, build, lint, and whitespace checks passing cleanly with exit code 0.
 
 ---
 
-## 10. Next Step
+## 10. Known Gaps & Deferred Items
 
-Grounded chat sessions, multi-turn query rewriting, citation validation, anti-prompt-injection fences, chunk source viewer, and Fastify chat API endpoints are fully implemented and verified.
-**Status**: Ready for **Independent Audit**, then **Instruction 09 — Document Versions and Reindex**.
+The following items are intentionally deferred to subsequent phases:
+1. **Async Worker & Queue**: BullMQ, Redis, and asynchronous retry worker scheduled for **Phase 10**.
+2. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
+3. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
+4. **Feedback & Admin Analytics**: Scheduled for **Phase 14**.
+
+---
+
+## 11. Next Step
+
+Document versioning, deduplication policy, atomic re-indexing, retrieval version isolation, LCS diff engine, deletion citation provenance, and RBAC controls are fully implemented and verified.
+**Status**: Ready for **Independent Audit**, then **Instruction 10 — Async Worker and Retries**.

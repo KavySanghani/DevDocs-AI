@@ -65,6 +65,7 @@ export async function searchHybridChunks(
         query: normalizedQuery,
         topK,
         documentId: params.documentId,
+        versionId: params.versionId,
         similarityThreshold: params.similarityThreshold,
         metadataFilter: params.metadataFilter,
       },
@@ -88,6 +89,7 @@ export async function searchHybridChunks(
       query: normalizedQuery,
       topK,
       documentId: params.documentId,
+      versionId: params.versionId,
       metadataFilter: params.metadataFilter,
     });
 
@@ -112,6 +114,7 @@ export async function searchHybridChunks(
         query: normalizedQuery,
         topK: candidateCount,
         documentId: params.documentId,
+        versionId: params.versionId,
         similarityThreshold: params.similarityThreshold,
         metadataFilter: params.metadataFilter,
       },
@@ -122,6 +125,7 @@ export async function searchHybridChunks(
       query: normalizedQuery,
       topK: candidateCount,
       documentId: params.documentId,
+      versionId: params.versionId,
       metadataFilter: params.metadataFilter,
     }),
   ]);

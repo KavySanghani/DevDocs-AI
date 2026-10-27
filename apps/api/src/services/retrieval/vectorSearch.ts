@@ -51,7 +51,7 @@ export async function searchSimilarChunks(
   overrideProvider?: EmbeddingProvider
 ): Promise<VectorSearchResult> {
   const env = getEnv();
-  const { organizationId, query: rawQuery, documentId, similarityThreshold, metadataFilter } = params;
+  const { organizationId, query: rawQuery, documentId, versionId, similarityThreshold, metadataFilter } = params;
 
   if (!organizationId) {
     throw new RetrievalError('Organization ID is required for vector search', 'INVALID_PARAM', 400);
@@ -113,6 +113,12 @@ export async function searchSimilarChunks(
     sqlParams.push(documentId);
   }
 
+  let versionFilterClause = 'AND dv.id = d.current_version_id';
+  if (versionId) {
+    versionFilterClause = `AND dv.id = $${paramIdx++}`;
+    sqlParams.push(versionId);
+  }
+
   let thresholdClause = '';
   if (typeof similarityThreshold === 'number') {
     thresholdClause = `AND (1 - (c.embedding <=> $1::vector)) >= $${paramIdx++}`;
@@ -151,7 +157,7 @@ export async function searchSimilarChunks(
     JOIN documents d ON dv.document_id = d.id
     WHERE d.organization_id = $2
       AND dv.status = 'ready'
-      AND dv.id = d.current_version_id
+      ${versionFilterClause}
       AND c.embedding IS NOT NULL
       ${docFilterClause}
       ${thresholdClause}

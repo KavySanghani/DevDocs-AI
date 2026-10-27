@@ -42,7 +42,7 @@ export async function searchLexicalChunks(
   params: LexicalSearchParams
 ): Promise<LexicalSearchResult> {
   const env = getEnv();
-  const { organizationId, query: rawQuery, documentId, metadataFilter } = params;
+  const { organizationId, query: rawQuery, documentId, versionId, metadataFilter } = params;
 
   if (!organizationId) {
     throw new RetrievalError('Organization ID is required for lexical search', 'INVALID_PARAM', 400);
@@ -73,6 +73,12 @@ export async function searchLexicalChunks(
     if (documentId) {
       docFilterClause = `AND d.id = $${paramIdx++}`;
       sqlParams.push(documentId);
+    }
+
+    let versionFilterClause = 'AND dv.id = d.current_version_id';
+    if (versionId) {
+      versionFilterClause = `AND dv.id = $${paramIdx++}`;
+      sqlParams.push(versionId);
     }
 
     let metadataFilterClause = '';
@@ -107,7 +113,7 @@ export async function searchLexicalChunks(
       CROSS JOIN websearch_to_tsquery('english', $1) AS query_ts
       WHERE d.organization_id = $2
         AND dv.status = 'ready'
-        AND dv.id = d.current_version_id
+        ${versionFilterClause}
         AND query_ts != ''::tsquery
         AND c.search_vector @@ query_ts
         ${docFilterClause}
