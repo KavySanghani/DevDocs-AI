@@ -322,7 +322,7 @@ export const ChunkResponseSchema = z.object({
   filePath: z.string().nullable().optional(),
   lineStart: z.number().int().nullable().optional(),
   lineEnd: z.number().int().nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
 });
 export type ChunkResponse = z.infer<typeof ChunkResponseSchema>;
@@ -380,7 +380,7 @@ export const RetrievedChunkSchema = z.object({
   similarityScore: z.number().optional(),
   distance: z.number().optional(),
   rank: z.number().int().min(1),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   // Phase 7 diagnostics
   score: z.number().optional(),
   vectorRank: z.number().int().min(1).nullable().optional(),
@@ -437,7 +437,7 @@ export const SearchRequestSchema = z.object({
   versionId: z.string().uuid().optional(),
   similarityThreshold: z.coerce.number().min(0).max(1).optional(),
   rrfK: z.coerce.number().int().min(1).max(500).default(60),
-  metadataFilter: z.record(z.unknown()).optional(),
+  metadataFilter: z.record(z.string(), z.unknown()).optional(),
 });
 export type SearchRequest = z.infer<typeof SearchRequestSchema>;
 
@@ -585,7 +585,7 @@ export const ChunkSourceResponseSchema = z.object({
   filePath: z.string().nullable().optional(),
   lineStart: z.number().int().nullable().optional(),
   lineEnd: z.number().int().nullable().optional(),
-  metadata: z.record(z.unknown()).optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
   createdAt: z.string(),
 });
 export type ChunkSourceResponse = z.infer<typeof ChunkSourceResponseSchema>;
