@@ -12,6 +12,7 @@ import {
   type EmbeddingProvider,
   IngestionError,
   EmbeddingProviderError,
+  LeaseFencingError,
 } from './types.js';
 
 interface DocumentVersionRow {
@@ -210,17 +211,8 @@ export async function ingestDocumentVersion(
       embedding: rawEmbeddings[idx]!,
     }));
 
-    // Stage 5: Persistence
+    // Stage 5 & 6: Atomic persistence, version finalization, and job finalization
     currentStage = 'persistence';
-    await persistChunksWithEmbeddings({
-      documentVersionId: targetVersionId,
-      organizationId,
-      documentId: row.document_id,
-      chunks: chunksWithEmbeddings,
-    });
-
-    // Stage 6: Finalization & status update
-    currentStage = 'finalization';
     const totalCharacters = chunks.reduce((acc, c) => acc + c.characterCount, 0);
     const totalEstimatedTokens = chunks.reduce((acc, c) => acc + c.tokenCount, 0);
     const ingestedAt = new Date().toISOString();
@@ -236,20 +228,29 @@ export async function ingestDocumentVersion(
       errorStage: null,
     };
 
-    await query(
-      `UPDATE document_versions
-       SET status = 'ready',
-           error_message = NULL,
-           source_details = $1,
-           updated_at = now()
-       WHERE id = $2`,
-      [JSON.stringify(updatedSourceDetails), targetVersionId]
-    );
+    await persistChunksWithEmbeddings({
+      documentVersionId: targetVersionId,
+      organizationId,
+      documentId: row.document_id,
+      chunks: chunksWithEmbeddings,
+      fencingContext: params.fencingContext,
+      versionFinalization: {
+        sourceDetails: updatedSourceDetails,
+      },
+      jobFinalization: params.fencingContext
+        ? {
+            payloadUpdates: {
+              chunkCount: chunks.length,
+              totalCharacters,
+              totalEstimatedTokens,
+              embeddingModel: provider.model,
+              completedAt: ingestedAt,
+            },
+          }
+        : undefined,
+    });
 
-    await query(
-      `UPDATE documents SET updated_at = now() WHERE id = $1`,
-      [row.document_id]
-    );
+    currentStage = 'finalization';
 
     return {
       documentId: row.document_id,
@@ -262,12 +263,20 @@ export async function ingestDocumentVersion(
       durationMs: Date.now() - startTime,
     };
   } catch (err) {
+    if (err instanceof LeaseFencingError) {
+      // Worker has lost its lease or fencing ownership during persistence.
+      // Must rethrow immediately without touching document_versions or masking the error!
+      throw err;
+    }
+
     const rawMessage = err instanceof Error ? err.message : String(err);
     const safeMessage = sanitizeErrorMessage(rawMessage);
     const stage = err instanceof IngestionError ? err.stage : currentStage;
 
-    // Fail the document version if targetVersionId is resolved
-    if (targetVersionId) {
+    // Fail the document version if targetVersionId is resolved AND we are in synchronous mode (no worker fencingContext).
+    // In background worker mode, failure handling is exclusively handled by the worker under lease ownership fencing.
+    // SEC-10-01: Never overwrite a version that was already marked 'ready'.
+    if (targetVersionId && !params.fencingContext) {
       const failedDetails = {
         ...existingSourceDetails,
         errorStage: stage,
@@ -281,7 +290,7 @@ export async function ingestDocumentVersion(
                error_message = $1,
                source_details = $2,
                updated_at = now()
-           WHERE id = $3`,
+           WHERE id = $3 AND status != 'ready'`,
           [safeMessage, JSON.stringify(failedDetails), targetVersionId]
         );
       } catch {

@@ -12,6 +12,8 @@
     "dev": "concurrently -k -p \"[{name}]\" -n \"api,web\" -c \"cyan,magenta\" \"npm run dev -w @devdocs/api\" \"npm run dev -w @devdocs/web\"",
     "dev:api": "npm run dev -w @devdocs/api",
     "dev:web": "npm run dev -w @devdocs/web",
+    "dev:worker": "npm run dev:worker -w @devdocs/api",
+    "worker": "npm run worker -w @devdocs/api",
     "build": "npm run build --workspaces --if-present",
     "typecheck": "npm run typecheck --workspaces --if-present",
     "lint": "npm run lint --workspaces --if-present",

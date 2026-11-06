@@ -61,6 +61,10 @@ export class IngestionError extends Error {
   }
 }
 
+export type { JobFencingContext } from '../jobs/jobService.js';
+export { LeaseFencingError } from '../jobs/jobService.js';
+import type { JobFencingContext } from '../jobs/jobService.js';
+
 export interface IngestDocumentParams {
   documentId: string;
   documentVersionId?: string | undefined;
@@ -73,6 +77,7 @@ export interface IngestDocumentParams {
         minChunkSizeChars?: number | undefined;
       }
     | undefined;
+  fencingContext?: JobFencingContext | undefined;
 }
 
 export type { IngestionResult };

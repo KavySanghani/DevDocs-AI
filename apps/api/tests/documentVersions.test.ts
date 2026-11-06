@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import crypto from 'node:crypto';
 import type { FastifyInstance } from 'fastify';
 import { closePool, query } from '@devdocs/db';
 import { resetTestDatabase } from '@devdocs/db/migrator';
@@ -836,22 +837,34 @@ describe('Phase 9: Document Versions, Re-indexing, Diffing, and Deletion', () =>
         });
       };
 
+      const contentA = '# Version Delta A\nUnique content payload for delta A.';
+      const contentB = '# Version Delta B\nUnique content payload for delta B.';
+      const contentC = '# Version Delta C\nUnique content payload for delta C.';
+      const hashA = crypto.createHash('sha256').update(contentA).digest('hex');
+      const hashB = crypto.createHash('sha256').update(contentB).digest('hex');
+      const hashC = crypto.createHash('sha256').update(contentC).digest('hex');
+
       // Launch 3 simultaneous requests against the same document
       const [resA, resB, resC] = await Promise.all([
-        upload('A', '# Version Delta A\nUnique content payload for delta A.'),
-        upload('B', '# Version Delta B\nUnique content payload for delta B.'),
-        upload('C', '# Version Delta C\nUnique content payload for delta C.'),
+        upload('A', contentA),
+        upload('B', contentB),
+        upload('C', contentC),
       ]);
 
       expect(resA.statusCode).toBe(201);
       expect(resB.statusCode).toBe(201);
       expect(resC.statusCode).toBe(201);
 
-      const verNumbers = [
-        JSON.parse(resA.body).document.currentVersion.versionNumber,
-        JSON.parse(resB.body).document.currentVersion.versionNumber,
-        JSON.parse(resC.body).document.currentVersion.versionNumber,
-      ].sort((a, b) => a - b);
+      const bodyA = JSON.parse(resA.body);
+      const bodyB = JSON.parse(resB.body);
+      const bodyC = JSON.parse(resC.body);
+
+      // Verify that each concurrent upload was allocated a distinct sequential version number
+      const verA = bodyA.document.versions.find((v: any) => v.contentHash === hashA)?.versionNumber;
+      const verB = bodyB.document.versions.find((v: any) => v.contentHash === hashB)?.versionNumber;
+      const verC = bodyC.document.versions.find((v: any) => v.contentHash === hashC)?.versionNumber;
+
+      const verNumbers = [verA, verB, verC].sort((a, b) => a - b);
 
       // Distinct sequential version numbers 2, 3, 4 without collision or duplicate error
       expect(verNumbers).toEqual([2, 3, 4]);

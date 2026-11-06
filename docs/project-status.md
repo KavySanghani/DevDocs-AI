@@ -1,6 +1,6 @@
 # DevDocs AI — Project Status
 
-Last Updated: Phase 09 Completion Checkpoint
+Last Updated: Phase 10 Completion Checkpoint
 
 ---
 
@@ -17,7 +17,7 @@ Last Updated: Phase 09 Completion Checkpoint
 | **07** | **Hybrid Retrieval & Rank Fusion** | **COMPLETED** | PostgreSQL tsvector FTS + RRF rank fusion, hybrid search, 226 tests passing |
 | **08** | **Grounded Chat & Citations** | **COMPLETED** | Grounded chat sessions, bounded multi-turn history, citation validation, chunk source viewer, 262 tests passing |
 | **09** | **Document Versions & Reindex** | **COMPLETED** | Immutable versions, deduplication policy, atomic reindex, LCS diff engine, row-lock concurrency & monotonic activation safety, 297 tests passing |
-| 10 | Async Worker & Retries | PENDING | Scheduled for Instruction 10 |
+| **10** | **Async Worker & Retries** | **COMPLETED** | BullMQ + Redis queue, HTTP 202 Accepted, GET /api/jobs/:id, bounded exponential retries, outbox recovery, 314 tests passing |
 | 11 | GitHub Codebase Ingestion | PENDING | Scheduled for Instruction 11 |
 | 12 | Frontend Workspace & Documents | PENDING | Scheduled for Instruction 12 |
 | 13 | Frontend Search, Chat & Citations | PENDING | Scheduled for Instruction 13 |
@@ -328,22 +328,74 @@ Last Updated: Phase 09 Completion Checkpoint
 - [x] Comprehensive Automated Tests:
   - 35 tests in `apps/api/tests/documentVersions.test.ts` covering versioning, sequencing, deduplication, activation, reindexing, search isolation, diffing, RBAC, deletion provenance, real database concurrent version uploads (F-01), and out-of-order monotonic ingestion activation (F-04).
   - **297 total monorepo tests passing** (45 in `@devdocs/db`, 5 in `@devdocs/shared`, 247 in `@devdocs/api`) with 1 opt-in test skipped and 0 failures.
-- [x] Dependency audit: 0 critical vulnerabilities (3 upstream advisories in existing dependencies: 1 low fastify, 1 moderate fast-uri, 1 high zod <4.6.6; breaking zod v4 upgrade deferred).
+- [x] Dependency audit: 0 critical vulnerabilities.
 - [x] Full monorepo typecheck, build, lint, and whitespace checks passing cleanly with exit code 0.
 
 ---
 
-## 10. Known Gaps & Deferred Items
+## 10. Phase 10 Verification & Evidence
 
-The following items are intentionally deferred to subsequent phases:
-1. **Async Worker & Queue**: BullMQ, Redis, and asynchronous retry worker scheduled for **Phase 10**.
-2. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
-3. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
-4. **Feedback & Admin Analytics**: Scheduled for **Phase 14**.
+### Criteria Verified
+- [x] BullMQ + Redis Background Queue Integration:
+  - Integration with `bullmq` 6.5+ and `ioredis` 6.0+ on queue `document-ingestion`.
+  - Queue producer enqueues jobs with deterministic BullMQ job IDs matching PostgreSQL `job.id`.
+  - Standalone worker entrypoint (`apps/api/src/worker.ts`) supporting `npm run worker` and `npm run dev:worker`.
+  - Configurable concurrency (`WORKER_CONCURRENCY`, default 5) and graceful shutdown (`SIGINT`/`SIGTERM`) cleanly draining jobs and closing Redis connections and database pool.
+- [x] Durable PostgreSQL Jobs System:
+  - `jobs` table serves as immutable source of truth for job lifecycle: `queued`, `processing`, `retrying`, `ready`, and `failed`.
+  - Unique composite constraint `(organization_id, idempotency_key)` guarantees tenant-scoped idempotency.
+  - Worker always re-validates authoritative PostgreSQL database state; client-supplied queue payloads cannot forge tenant context.
+- [x] Asynchronous HTTP 202 Accepted Endpoints:
+  - `POST /api/documents?async=true`: creates document & version in `queued` state, enqueues BullMQ job, and returns HTTP 202 Accepted with `{ jobId, status: 'queued', documentId, versionId }`.
+  - `POST /api/documents/:id/versions?async=true`: creates version in `queued` state, enqueues BullMQ job, and returns HTTP 202 Accepted.
+  - `POST /api/documents/:id/reindex` (supports `?async=true`, `Prefer: respond-async`, or `{ async: true }` body): enqueues BullMQ job and returns HTTP 202 Accepted.
+  - Full backward compatibility: synchronous callers (omitting async headers/params) continue to receive 201/200 synchronous execution.
+- [x] Job Status Inspection & Tenant Scoping:
+  - Endpoint `GET /api/jobs/:id` provides authoritative progress, attempts, stage, and error details.
+  - Server-side tenant RBAC strictly enforced: cross-tenant access returns 404 (`JOB_NOT_FOUND`).
+- [x] Retry Classification & Bounded Exponential Backoff:
+  - `isTransientError`: detects rate limits (HTTP 429), gateway errors (503/504), network disconnects (`ECONNRESET`, timeouts).
+  - Bounded exponential backoff controlled by `INGESTION_MAX_ATTEMPTS` (3) and `INGESTION_BACKOFF_MS`.
+  - While retrying, job status updates to `retrying` with attempt counter and sanitized error summary.
+  - Permanent errors (e.g. invalid syntax, missing text) fail immediately without retrying.
+  - Exhausted attempts transition job and document version to `failed` and throw `UnrecoverableError`.
+- [x] Idempotency & Safe Deduplication:
+  - Duplicate delivery of an already-ready job exits immediately without redundant processing.
+  - Chunk persistence runs within an atomic transaction purging existing chunks before inserting new ones, eliminating duplicate chunks across retries.
+  - Out-of-order completion protection: monotonic activation (F-04) prevents slower late-finishing background versions from displacing newer current versions.
+- [x] Safe Lease/Heartbeat Ownership & Database-Enforced Chunk Fencing (F-01, SEC-10-01, SEC-10-02):
+  - Database schema adds `locked_by VARCHAR(255)`, `locked_until TIMESTAMPTZ`, and `fencing_token INT NOT NULL DEFAULT 0` via migration `005_add_job_leases.sql`.
+  - Atomic conditional updates (`claimJobLease`) claim jobs in `queued`, `retrying`, or expired `processing` (`locked_until < now()`), atomically incrementing `attempts` and `fencing_token`.
+  - Active workers maintain a background heartbeat timer (`renewJobLease`) extending `locked_until`.
+  - **Database-Enforced Chunk Fencing (SEC-10-02)**: `persistChunksWithEmbeddings` receives `fencingContext` and executes inside `withTransaction`. It locks the `jobs` row using `SELECT ... FOR UPDATE`, strictly validating `status = 'processing'`, `locked_by = workerId`, `fencing_token = fencingToken`, and authoritative PostgreSQL server time `(locked_until > now())`. If invalid, the transaction aborts before deleting or inserting any chunks, marking versions ready, or updating pointers.
+  - **Safe Failure Handling (SEC-10-01)**: The worker error handler never unconditionally marks versions `failed`. `releaseJobFailure` validates `locked_by` and `fencing_token` under a `FOR UPDATE` lock. Only if ownership is confirmed does it transition the job and update `document_versions SET status = 'failed' ... WHERE status != 'ready'`, ensuring stale workers cannot overwrite a version another worker marked `ready`.
+- [x] Periodic Background Recovery Scanner (F-02 Remediation):
+  - Worker lifecycle runs an initial recovery scan at boot and recurring recovery sweeps (`startPeriodicRecovery`) at configurable intervals (`WORKER_RECOVERY_INTERVAL_MS`, default 30s).
+  - In-process overlap guard (`isPeriodicScanning`) prevents concurrent scanner invocations.
+  - Multi-process safe via database conditional updates (`claimJobLease`).
+  - Graceful worker shutdown (`SIGINT`/`SIGTERM`) clears timers and awaits in-flight scan completion.
+- [x] Scoped Re-index Idempotency with Client Keys & Race-Safe Insertions (F-03, SEC-10-03):
+  - `POST /api/documents/:id/reindex` supports client-supplied `Idempotency-Key` HTTP header or body property, validated by regex `^[A-Za-z0-9_.:-]+$` (1 to 255 chars).
+  - Scopes idempotency keys to `reindex:${doc.id}:${targetVersionId}:${key}`, preserving PostgreSQL composite uniqueness `(organization_id, idempotency_key)`.
+  - **Race-Safe Atomic Creation (SEC-10-03)**: `createJob` utilizes `INSERT INTO jobs ... ON CONFLICT (organization_id, idempotency_key) DO NOTHING RETURNING *`. If a row was inserted, it returns `isNew: true`. If a conflict occurred (0 rows returned), it queries the existing row and returns `isNew: false`. Concurrent requests with the same idempotency key resolve deterministically with exactly one request triggering initial queueing.
+- [x] Comprehensive Automated Tests:
+  - 35 dedicated tests in `apps/api/tests/worker.test.ts` covering error classification, async 202 endpoints, job status inspection, tenant RBAC isolation, success state transitions, transient retry loops, exhausted attempts, duplicate delivery idempotency, outbox recovery, lease claiming, active job non-reclamation, heartbeat renewal, fencing token split-brain guard, simultaneous recovery race handling, periodic recovery scanner, reindex idempotency keys, duplicate retries, spoofed payload security, stale worker catch path non-corruption (SEC-10-01), paused worker embedding lease expiration chunk fencing (SEC-10-02), direct fencing token rejection (SEC-10-02), and concurrent race-safe job creation (SEC-10-03).
+  - **333 total monorepo tests passing** (46 in `@devdocs/db`, 5 in `@devdocs/shared`, 282 in `@devdocs/api`) with 1 opt-in test skipped and 0 failures.
+- [x] Zero audit vulnerabilities (`npm audit` reporting 0 vulnerabilities).
+- [x] Full monorepo typecheck, build, lint, and whitespace checks passing cleanly with exit code 0.
 
 ---
 
-## 11. Next Step
+## 11. Known Gaps & Deferred Items
 
-Document versioning, deduplication policy, atomic re-indexing, retrieval version isolation, LCS diff engine, deletion citation provenance, and RBAC controls are fully implemented and verified.
-**Status**: Ready for **Independent Audit**, then **Instruction 10 — Async Worker and Retries**.
+The following items are intentionally deferred to subsequent phases:
+1. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
+2. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
+3. **Feedback & Admin Analytics**: Scheduled for **Phase 14**.
+
+---
+
+## 12. Next Step
+
+Phase 10 Final Targeted Remediation (SEC-10-01 to SEC-10-03) complete and verified with 333 passing tests and 0 vulnerabilities.
+**Status**: Ready for final review.

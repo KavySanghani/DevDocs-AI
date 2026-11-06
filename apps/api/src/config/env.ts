@@ -94,10 +94,25 @@ export const ApiEnvSchema = z
       .transform((val) => parseInt(val, 10))
       .pipe(z.number().int().positive()),
 
-    // External Provider Keys & Deferred Infrastructure
+    // External Provider Keys & Background Worker Infrastructure (Phase 10)
     OPENAI_API_KEY: z.string().optional(),
     GROQ_API_KEY: z.string().optional(),
-    REDIS_URL: z.string().optional(),
+    REDIS_URL: z.string().default('redis://127.0.0.1:6379'),
+    WORKER_CONCURRENCY: z
+      .string()
+      .default('5')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    INGESTION_MAX_ATTEMPTS: z
+      .string()
+      .default('3')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    INGESTION_BACKOFF_MS: z
+      .string()
+      .default('1000')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV === 'production') {

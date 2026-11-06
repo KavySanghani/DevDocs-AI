@@ -424,3 +424,57 @@ This document records the architectural decisions, trade-offs, and rationale ado
   - Full version audit trail and rollback capabilities.
   - Zero duplicate chunks during re-indexing retries.
   - Historical chat logs remain readable and citeable even after source documents are updated or pruned.
+
+---
+
+## 2026-10-27 — Decision 010: BullMQ, Redis, Background Workers, Bounded Retries, and Idempotency
+
+- **Status**: Accepted
+- **Context**: In Phase 10, DevDocs AI moves long-running ingestion and re-indexing operations out of HTTP request-response cycles into an asynchronous, resilient background worker architecture. Synchronous ingestion blocks HTTP server event loops, risks client socket timeouts on large documents, and lacks bounded exponential retry mechanics. The system requires:
+  1. Asynchronous execution with immediate HTTP `202 Accepted` returning a durable `jobId`.
+  2. Redis queue coordination via BullMQ while keeping PostgreSQL as the immutable, authoritative source of truth.
+  3. Strict multi-tenant security preventing tenant-context forging through unvalidated queue payloads.
+  4. Robust retry classification distinguishing retryable transient errors (429 rate limits, 5xx gateway errors, network timeouts) from permanent terminal failures (400 bad request, 404 not found, parse errors).
+  5. Deterministic idempotency avoiding duplicate chunks, duplicate versions, or redundant processing on retries or repeated queue deliveries.
+  6. Outbox recovery handling the database-commit vs. Redis-enqueue gap so database jobs are never stranded if Redis is temporarily unreachable.
+  7. Backward compatibility preserving synchronous ingestion when async is not requested, maintaining compatibility with existing clients and tests.
+- **Decision**:
+  1. **BullMQ and Redis Integration**:
+     - Adopt BullMQ 6.5+ and ioredis 6.0+ on queue `document-ingestion`.
+     - Queue producer (`apps/api/src/services/queue/ingestionQueue.ts`): Enqueues jobs with deterministic BullMQ job IDs matching PostgreSQL `jobId` to guarantee deduplication.
+     - Standalone Worker (`apps/api/src/worker.ts`): Executable via `npm run worker` or `npm run dev:worker`, featuring bounded concurrency (`WORKER_CONCURRENCY`, default 5), clean lifecycle logging without sensitive document exposure, and graceful shutdown handling (`SIGINT`/`SIGTERM`) that drains jobs and cleanly closes Redis and PostgreSQL pools.
+  2. **PostgreSQL as Authoritative Source of Truth**:
+     - BullMQ queue state is ephemeral; PostgreSQL `jobs` table maintains durable status tracking across `queued`, `processing`, `retrying`, `ready`, and `failed`.
+     - Unique composite constraint `(organization_id, idempotency_key)` guarantees tenant-scoped idempotency.
+     - The background worker reloads authoritative records directly from PostgreSQL; client-supplied queue payloads are verified against authoritative DB rows, preventing tenant forgery attacks.
+  3. **HTTP 202 Accepted and Status Polling**:
+     - Endpoints `POST /api/documents?async=true`, `POST /:id/versions?async=true`, and `POST /:id/reindex` (with `?async=true`, `Prefer: respond-async`, or `{ async: true }`) return HTTP `202 Accepted` with `{ jobId, status: 'queued', documentId, versionId, message }`.
+     - Status inspection endpoint: `GET /api/jobs/:id` enforces server-side authentication and tenant boundary isolation (cross-tenant requests return 404 `JOB_NOT_FOUND`).
+  4. **Transient vs. Permanent Failure Classification & Bounded Retries**:
+     - `isTransientError`: Identifies HTTP 429 (rate limit), 503/504 gateway errors, `ECONNRESET`, and timeouts as eligible for retry.
+     - Exponential backoff with jitter bounded by `INGESTION_MAX_ATTEMPTS` (default 3) and `INGESTION_BACKOFF_MS` (default 1000ms).
+     - When retrying, job status transitions to `retrying` with attempt counter and sanitized error summary.
+     - Permanent errors (e.g. unparseable documents, missing text) and exhausted retries immediately transition job and version status to `failed` and throw `UnrecoverableError` to halt pointless worker cycling.
+  5. **Safe Lease/Heartbeat Ownership, Atomic Chunk Fencing & Conditional Failures (F-01, SEC-10-01, SEC-10-02)**:
+     - Database schema adds `locked_by VARCHAR(255)`, `locked_until TIMESTAMPTZ`, and `fencing_token INT NOT NULL DEFAULT 0` via migration `005_add_job_leases.sql`.
+     - Atomic conditional updates (`claimJobLease`) claim jobs in `queued`, `retrying`, or expired `processing` (`locked_until < now()`), atomically incrementing `attempts` and `fencing_token`.
+     - Active workers maintain a background heartbeat timer (`renewJobLease`) extending `locked_until`.
+     - **Database-Enforced Chunk Fencing (SEC-10-02)**: `persistChunksWithEmbeddings` receives `fencingContext` and executes inside `withTransaction`. It locks the `jobs` row using `SELECT ... FOR UPDATE`, strictly validating `status = 'processing'`, `locked_by = workerId`, `fencing_token = fencingToken`, and authoritative `(locked_until > now())`. If invalid, the transaction aborts before deleting or inserting any chunks, marking versions ready, or updating pointers.
+     - **Safe Failure Handling (SEC-10-01)**: The worker error handler never unconditionally marks versions `failed`. `releaseJobFailure` validates `locked_by` and `fencing_token` under a `FOR UPDATE` lock. Only if ownership is confirmed does it transition the job and update `document_versions SET status = 'failed' ... WHERE status != 'ready'`, ensuring stale workers cannot overwrite a version another worker marked `ready`.
+  6. **Periodic Background Recovery Scanner (F-02 Remediation)**:
+     - Worker lifecycle initiates an initial scan at boot and schedules recurring background recovery sweeps (`startPeriodicRecovery`) at a configurable interval (`WORKER_RECOVERY_INTERVAL_MS`, default 30s).
+     - Re-entrant guard (`isPeriodicScanning`) prevents overlapping scans within a single worker process.
+     - Safe across multiple concurrent worker processes via atomic database-level lease acquisition.
+     - Graceful worker shutdown (`SIGINT`/`SIGTERM`) clears timers and awaits in-flight scan completion.
+  7. **Scoped Re-index Idempotency with Client Keys & Race-Safe Insertions (F-03, SEC-10-03)**:
+     - `POST /api/documents/:id/reindex` supports client-supplied `Idempotency-Key` HTTP header or body property, validated by regex `^[A-Za-z0-9_.:-]+$` (1 to 255 chars).
+     - Scopes idempotency keys to `reindex:${doc.id}:${targetVersionId}:${key}`, preserving PostgreSQL composite uniqueness `(organization_id, idempotency_key)`.
+     - **Race-Safe Atomic Creation (SEC-10-03)**: `createJob` utilizes `INSERT INTO jobs ... ON CONFLICT (organization_id, idempotency_key) DO NOTHING RETURNING *`. If a row was inserted, it returns `isNew: true`. If a conflict occurred (0 rows returned), it queries the existing row and returns `isNew: false`. Concurrent requests with the same idempotency key resolve deterministically with exactly one request triggering initial queueing.
+  8. **Backward Compatibility**:
+     - Requests omitting `async=true` / `Prefer: respond-async` continue to process synchronously, returning 201/200, ensuring 100% backward compatibility for existing integration suites.
+- **Consequences**:
+  - Eliminates HTTP request timeouts for large files.
+  - Resilience against third-party LLM/embedding provider rate limits and transient gateway blips.
+  - Zero stranded jobs across Redis restarts or network partitions via lease-based recovery and periodic scanner.
+  - Strict split-brain safety via database-level transaction fencing tokens: expired workers cannot delete or insert chunks or corrupt document versions.
+  - Complete multi-tenant isolation, deterministic status observability, and client-controlled race-safe idempotency.

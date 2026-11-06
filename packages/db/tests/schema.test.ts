@@ -53,7 +53,7 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       const res = await client.query<{ version: string; name: string }>(
         'SELECT version, name FROM schema_migrations ORDER BY version ASC'
       );
-      expect(res.rows.length).toBe(4);
+      expect(res.rows.length).toBe(5);
       expect(res.rows[0]?.version).toBe('001');
       expect(res.rows[0]?.name).toBe('enable_pgvector');
       expect(res.rows[1]?.version).toBe('002');
@@ -62,17 +62,19 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       expect(res.rows[2]?.name).toBe('create_revoked_tokens');
       expect(res.rows[3]?.version).toBe('004');
       expect(res.rows[3]?.name).toBe('create_citations');
+      expect(res.rows[4]?.version).toBe('005');
+      expect(res.rows[4]?.name).toBe('add_job_leases');
     });
 
     it('re-running migrations is completely idempotent (applies 0, skips all)', async () => {
       const result = await runMigrations(TEST_DATABASE_URL);
       expect(result.applied.length).toBe(0);
-      expect(result.skipped.length).toBe(4);
+      expect(result.skipped.length).toBe(5);
     });
 
     it('reports migration status correctly', async () => {
       const status = await getMigrationStatus(TEST_DATABASE_URL);
-      expect(status.length).toBe(4);
+      expect(status.length).toBe(5);
       expect(status.every((s) => s.applied)).toBe(true);
     });
   });
@@ -219,6 +221,29 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
           [orgId]
         )
       ).rejects.toThrow(/uq_jobs_org_idempotency/);
+    });
+
+    it('supports job lease columns and fencing tokens (migration 005)', async () => {
+      const orgRes = await client.query<{ id: string }>(
+        "INSERT INTO organizations (name, slug) VALUES ('Lease Corp', 'lease-corp') RETURNING id"
+      );
+      const orgId = orgRes.rows[0]!.id;
+
+      const jobRes = await client.query<{
+        id: string;
+        locked_by: string | null;
+        locked_until: Date | null;
+        fencing_token: number;
+      }>(
+        `INSERT INTO jobs (organization_id, type, idempotency_key, locked_by, locked_until, fencing_token)
+         VALUES ($1, 'document_ingestion', 'lease-key-1', 'worker-1', now() + interval '30 seconds', 1)
+         RETURNING id, locked_by, locked_until, fencing_token`,
+        [orgId]
+      );
+
+      expect(jobRes.rows[0]?.locked_by).toBe('worker-1');
+      expect(jobRes.rows[0]?.fencing_token).toBe(1);
+      expect(jobRes.rows[0]?.locked_until).toBeInstanceOf(Date);
     });
   });
 

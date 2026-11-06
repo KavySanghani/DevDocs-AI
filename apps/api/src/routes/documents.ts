@@ -162,6 +162,11 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    const isAsync =
+      (request.query as { async?: string })?.async === 'true' ||
+      request.headers['prefer'] === 'respond-async' ||
+      fields.async?.value === 'true';
+
     try {
       const document = await uploadAndProcessDocument({
         organizationId,
@@ -172,7 +177,18 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         customName,
         maxSizeBytes: env.MAX_FILE_SIZE_BYTES,
         documentId,
+        async: isAsync,
       });
+
+      if (isAsync && document.job) {
+        return reply.status(202).send({
+          jobId: document.job.id,
+          status: document.job.status,
+          documentId: document.id,
+          versionId: document.currentVersionId || document.versions?.[0]?.id,
+          message: 'Document ingestion job enqueued successfully.',
+        });
+      }
 
       return reply.status(201).send({ document });
     } catch (err) {
@@ -305,6 +321,11 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    const isAsync =
+      (request.query as { async?: string })?.async === 'true' ||
+      request.headers['prefer'] === 'respond-async' ||
+      (uploadData.fields as Record<string, { value?: string }>)?.async?.value === 'true';
+
     try {
       const updatedDocument = await uploadAndProcessDocument({
         organizationId: doc.organizationId,
@@ -314,7 +335,18 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         declaredMimeType: uploadData.mimetype,
         maxSizeBytes: env.MAX_FILE_SIZE_BYTES,
         documentId: doc.id,
+        async: isAsync,
       });
+
+      if (isAsync && updatedDocument.job) {
+        return reply.status(202).send({
+          jobId: updatedDocument.job.id,
+          status: updatedDocument.job.status,
+          documentId: updatedDocument.id,
+          versionId: updatedDocument.versions?.[updatedDocument.versions.length - 1]?.id,
+          message: 'Document version ingestion job enqueued successfully.',
+        });
+      }
 
       return reply.status(201).send({ document: updatedDocument });
     } catch (err) {
@@ -487,13 +519,51 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    const isAsync =
+      (request.query as { async?: string })?.async === 'true' ||
+      request.headers['prefer'] === 'respond-async' ||
+      Boolean(parseResult.data.async);
+
+    const headerIdempotencyKey = request.headers['idempotency-key'] as string | undefined;
+    const idempotencyKey = parseResult.data.idempotencyKey ?? headerIdempotencyKey;
+
+    if (idempotencyKey !== undefined) {
+      if (
+        typeof idempotencyKey !== 'string' ||
+        idempotencyKey.length < 1 ||
+        idempotencyKey.length > 255 ||
+        !/^[A-Za-z0-9_.:-]+$/.test(idempotencyKey)
+      ) {
+        return reply.status(400).send({
+          error: {
+            code: 'INVALID_IDEMPOTENCY_KEY',
+            message: 'Idempotency-Key must be 1-255 characters consisting of alphanumeric, dash, underscore, colon, or period characters.',
+            statusCode: 400,
+            requestId: request.id,
+          },
+        });
+      }
+    }
+
     try {
       const result = await reindexDocument({
         documentId: request.params.id,
         versionId: parseResult.data.versionId,
         callerUserId: request.user!.userId,
         config: parseResult.data.config,
+        async: isAsync,
+        idempotencyKey,
       });
+
+      if (isAsync) {
+        return reply.status(202).send({
+          jobId: result.jobId,
+          status: result.status || 'queued',
+          documentId: result.documentId,
+          versionId: result.versionId,
+          message: 'Document re-indexing job enqueued successfully.',
+        });
+      }
 
       return reply.status(200).send({ reindex: result });
     } catch (err) {
@@ -522,6 +592,8 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
         chunkOverlapChars?: number;
         minChunkSizeChars?: number;
       };
+      async?: boolean;
+      idempotencyKey?: string;
     };
   }>('/:id/ingest', async (request, reply) => {
     const parseResult = DocumentReindexRequestSchema.safeParse(request.body ?? {});
@@ -537,13 +609,51 @@ export async function documentRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    const isAsync =
+      (request.query as { async?: string })?.async === 'true' ||
+      request.headers['prefer'] === 'respond-async' ||
+      Boolean(parseResult.data.async);
+
+    const headerIdempotencyKey = request.headers['idempotency-key'] as string | undefined;
+    const idempotencyKey = parseResult.data.idempotencyKey ?? headerIdempotencyKey;
+
+    if (idempotencyKey !== undefined) {
+      if (
+        typeof idempotencyKey !== 'string' ||
+        idempotencyKey.length < 1 ||
+        idempotencyKey.length > 255 ||
+        !/^[A-Za-z0-9_.:-]+$/.test(idempotencyKey)
+      ) {
+        return reply.status(400).send({
+          error: {
+            code: 'INVALID_IDEMPOTENCY_KEY',
+            message: 'Idempotency-Key must be 1-255 characters consisting of alphanumeric, dash, underscore, colon, or period characters.',
+            statusCode: 400,
+            requestId: request.id,
+          },
+        });
+      }
+    }
+
     try {
       const result = await reindexDocument({
         documentId: request.params.id,
         versionId: parseResult.data.versionId,
         callerUserId: request.user!.userId,
         config: parseResult.data.config,
+        async: isAsync,
+        idempotencyKey,
       });
+
+      if (isAsync) {
+        return reply.status(202).send({
+          jobId: result.jobId,
+          status: 'queued',
+          documentId: result.documentId,
+          versionId: result.versionId,
+          message: 'Document ingestion job enqueued successfully.',
+        });
+      }
 
       return reply.status(200).send({
         ingestion: {

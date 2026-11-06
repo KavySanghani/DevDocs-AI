@@ -233,6 +233,13 @@ export const DocumentReindexRequestSchema = z.object({
       minChunkSizeChars: z.number().int().positive().optional(),
     })
     .optional(),
+  async: z.boolean().optional(),
+  idempotencyKey: z
+    .string()
+    .min(1)
+    .max(255)
+    .regex(/^[A-Za-z0-9_.:-]+$/, 'Idempotency key must contain only alphanumeric characters and [-_.:]')
+    .optional(),
 });
 export type DocumentReindexRequest = z.infer<typeof DocumentReindexRequestSchema>;
 
@@ -241,11 +248,12 @@ export const DocumentReindexResponseSchema = z.object({
   documentId: z.string().uuid(),
   versionId: z.string().uuid(),
   status: DocumentStatusSchema,
-  chunkCount: z.number().int(),
-  totalCharacters: z.number().int(),
-  totalEstimatedTokens: z.number().int(),
-  embeddingModel: z.string(),
+  chunkCount: z.number().int().optional(),
+  totalCharacters: z.number().int().optional(),
+  totalEstimatedTokens: z.number().int().optional(),
+  embeddingModel: z.string().optional(),
   reindexedAt: z.string(),
+  jobId: z.string().uuid().optional(),
 });
 export type DocumentReindexResponse = z.infer<typeof DocumentReindexResponseSchema>;
 
@@ -589,3 +597,48 @@ export const ChunkSourceResponseSchema = z.object({
   createdAt: z.string(),
 });
 export type ChunkSourceResponse = z.infer<typeof ChunkSourceResponseSchema>;
+
+// ==============================================================================
+// Background Jobs & Queue Schemas (Phase 10)
+// ==============================================================================
+
+export const JobStatusSchema = z.enum(['queued', 'processing', 'retrying', 'ready', 'failed']);
+export type JobStatus = z.infer<typeof JobStatusSchema>;
+
+export const JobTypeSchema = z.enum([
+  'document_ingestion',
+  'repo_import',
+  'document_reindex',
+  'document_deletion',
+]);
+export type JobType = z.infer<typeof JobTypeSchema>;
+
+export const JobResponseSchema = z.object({
+  id: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  type: JobTypeSchema,
+  idempotencyKey: z.string(),
+  status: JobStatusSchema,
+  attempts: z.number().int().min(0),
+  maxAttempts: z.number().int().min(1),
+  errorSummary: z.string().nullable().optional(),
+  stage: z.string().optional(),
+  documentId: z.string().uuid().optional(),
+  versionId: z.string().uuid().optional(),
+  payload: z.record(z.string(), z.unknown()).optional(),
+  lockedBy: z.string().nullable().optional(),
+  lockedUntil: z.string().nullable().optional(),
+  fencingToken: z.number().int().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type JobResponse = z.infer<typeof JobResponseSchema>;
+
+export const AsyncJobResponseSchema = z.object({
+  jobId: z.string().uuid(),
+  status: JobStatusSchema,
+  documentId: z.string().uuid().optional(),
+  versionId: z.string().uuid().optional(),
+  message: z.string().optional(),
+});
+export type AsyncJobResponse = z.infer<typeof AsyncJobResponseSchema>;

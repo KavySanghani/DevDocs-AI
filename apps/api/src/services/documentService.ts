@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import { query, withTransaction } from '@devdocs/db';
 import {
   type DocumentDetailResponse,
@@ -15,6 +16,8 @@ import { validateDocumentFile } from './documentValidation.js';
 import { getOrganizationMember } from './organizationService.js';
 import { ingestDocumentVersion } from './ingestion/index.js';
 import { IngestionError, type EmbeddingProvider } from './ingestion/types.js';
+import { createJob, updateJobStatus } from './jobs/jobService.js';
+import { enqueueIngestionJob } from './queue/ingestionQueue.js';
 
 export class DocError extends Error {
   constructor(
@@ -25,6 +28,7 @@ export class DocError extends Error {
   ) {
     super(message);
     this.name = 'DocError';
+    Object.setPrototypeOf(this, DocError.prototype);
   }
 }
 
@@ -38,6 +42,14 @@ export interface UploadDocumentParams {
   maxSizeBytes?: number | undefined;
   documentId?: string | undefined;
   provider?: EmbeddingProvider | undefined;
+  async?: boolean | undefined;
+}
+
+export interface UploadDocumentResult extends DocumentDetailResponse {
+  job?: {
+    id: string;
+    status: DocumentStatus | string;
+  };
 }
 
 export interface ListDocumentsParams {
@@ -78,7 +90,7 @@ interface DocumentRow {
  */
 export async function uploadAndProcessDocument(
   params: UploadDocumentParams
-): Promise<DocumentDetailResponse> {
+): Promise<UploadDocumentResult> {
   const {
     organizationId,
     userId,
@@ -337,64 +349,124 @@ export async function uploadAndProcessDocument(
     [finalStatus, errorMessage, JSON.stringify(sourceDetailsPayload), createdVersion.id]
   );
 
-  // 6. If parsing succeeded, run the ingestion pipeline (chunking + embeddings + vector storage)
-  if (finalStatus === 'processing') {
-    try {
-      const ingestRes = await ingestDocumentVersion({
-        documentId: targetDoc!.id,
-        documentVersionId: createdVersion.id,
-        organizationId: targetDoc!.organization_id,
-        ...(params.provider ? { provider: params.provider } : {}),
-      });
+  // 6. If parsing succeeded, handle queueing (async) or immediate execution (sync)
+  let jobInfo: { id: string; status: DocumentStatus | string } | undefined;
+  const idempotencyKey = `ingest:${targetDoc!.id}:${createdVersion.id}:${createdVersion.content_hash}`;
 
-      finalStatus = 'ready';
-      errorMessage = null;
-      sourceDetailsPayload = {
-        ...sourceDetailsPayload,
-        chunkCount: ingestRes.chunkCount,
-        totalCharacters: ingestRes.totalCharacters,
-        totalEstimatedTokens: ingestRes.totalEstimatedTokens,
-        embeddingModel: ingestRes.embeddingModel,
-      };
-
-      // Set as active version on success only if:
-      // 1. Candidate belongs to this document and is 'ready'
-      // 2. Document currently has no active version OR candidate version_number >= current active version's number
-      // This prevents a slower, older version from overwriting a newer current version (F-04).
-      await query(
-        `UPDATE documents d
-         SET current_version_id = new_v.id,
-             updated_at = now()
-         FROM document_versions new_v
-         WHERE d.id = $2
-           AND new_v.id = $1
-           AND new_v.document_id = d.id
-           AND new_v.status = 'ready'
-           AND (
-             d.current_version_id IS NULL
-             OR new_v.version_number >= (
-               SELECT cur_v.version_number
-               FROM document_versions cur_v
-               WHERE cur_v.id = d.current_version_id
-             )
-           )`,
-        [createdVersion.id, targetDoc!.id]
-      );
-    } catch (ingestErr) {
-      finalStatus = 'failed';
-      errorMessage =
-        ingestErr instanceof Error ? ingestErr.message : 'Document ingestion pipeline failed';
-
-      // Update version record with failed status and error message
+  if (params.async) {
+    if (finalStatus === 'processing') {
+      // Async Mode: update version to 'queued', record job, and dispatch to Redis/BullMQ queue
       await query(
         `UPDATE document_versions
-         SET status = 'failed',
-             error_message = $1,
+         SET status = 'queued',
              updated_at = now()
-         WHERE id = $2`,
-        [errorMessage, createdVersion.id]
+         WHERE id = $1`,
+        [createdVersion.id]
       );
-      // NOTE: We deliberately do NOT update documents.current_version_id on failure!
+
+      const { job } = await createJob({
+        organizationId: targetDoc!.organization_id,
+        type: 'document_ingestion',
+        idempotencyKey,
+        payload: {
+          documentId: targetDoc!.id,
+          versionId: createdVersion.id,
+          organizationId: targetDoc!.organization_id,
+          stage: 'queued',
+        },
+      });
+
+      await enqueueIngestionJob({
+        jobId: job.id,
+        organizationId: targetDoc!.organization_id,
+        documentId: targetDoc!.id,
+        versionId: createdVersion.id,
+        type: 'document_ingestion',
+      });
+
+      jobInfo = { id: job.id, status: 'queued' };
+    } else {
+      // Extraction failed permanently prior to queueing
+      const { job } = await createJob({
+        organizationId: targetDoc!.organization_id,
+        type: 'document_ingestion',
+        idempotencyKey,
+        payload: {
+          documentId: targetDoc!.id,
+          versionId: createdVersion.id,
+          organizationId: targetDoc!.organization_id,
+          stage: 'failed',
+        },
+      });
+
+      await updateJobStatus(job.id, {
+        status: 'failed',
+        stage: 'failed',
+        errorSummary: errorMessage,
+      });
+
+      jobInfo = { id: job.id, status: 'failed' };
+    }
+  } else {
+    // Synchronous Mode: backward compatible processing
+    if (finalStatus === 'processing') {
+      try {
+        const ingestRes = await ingestDocumentVersion({
+          documentId: targetDoc!.id,
+          documentVersionId: createdVersion.id,
+          organizationId: targetDoc!.organization_id,
+          ...(params.provider ? { provider: params.provider } : {}),
+        });
+
+        finalStatus = 'ready';
+        errorMessage = null;
+        sourceDetailsPayload = {
+          ...sourceDetailsPayload,
+          chunkCount: ingestRes.chunkCount,
+          totalCharacters: ingestRes.totalCharacters,
+          totalEstimatedTokens: ingestRes.totalEstimatedTokens,
+          embeddingModel: ingestRes.embeddingModel,
+        };
+
+        // Set as active version on success only if:
+        // 1. Candidate belongs to this document and is 'ready'
+        // 2. Document currently has no active version OR candidate version_number >= current active version's number
+        // This prevents a slower, older version from overwriting a newer current version (F-04).
+        await query(
+          `UPDATE documents d
+           SET current_version_id = new_v.id,
+               updated_at = now()
+           FROM document_versions new_v
+           WHERE d.id = $2
+             AND new_v.id = $1
+             AND new_v.document_id = d.id
+             AND new_v.status = 'ready'
+             AND (
+               d.current_version_id IS NULL
+               OR new_v.version_number >= (
+                 SELECT cur_v.version_number
+                 FROM document_versions cur_v
+                 WHERE cur_v.id = d.current_version_id
+               )
+             )`,
+          [createdVersion.id, targetDoc!.id]
+        );
+      } catch (ingestErr) {
+        finalStatus = 'failed';
+        errorMessage =
+          ingestErr instanceof Error ? ingestErr.message : 'Document ingestion pipeline failed';
+
+        // Update version record with failed status and error message
+        await query(
+          `UPDATE document_versions
+           SET status = 'failed',
+               error_message = $1,
+               updated_at = now()
+           WHERE id = $2`,
+          [errorMessage, createdVersion.id]
+        );
+        // NOTE: We deliberately do NOT update documents.current_version_id on failure!
+      }
     }
   }
 
@@ -467,6 +539,7 @@ export async function uploadAndProcessDocument(
     },
     createdAt: targetDoc!.created_at.toISOString(),
     updatedAt: new Date().toISOString(),
+    ...(jobInfo ? { job: jobInfo } : {}),
   };
 }
 
@@ -751,8 +824,10 @@ export async function reindexDocument(params: {
   callerUserId: string;
   config?: ChunkingConfigOverride | undefined;
   provider?: EmbeddingProvider | undefined;
+  async?: boolean | undefined;
+  idempotencyKey?: string | undefined;
 }): Promise<DocumentReindexResponse> {
-  const { documentId, versionId, callerUserId, config, provider } = params;
+  const { documentId, versionId, callerUserId, config, provider, async: isAsync, idempotencyKey: clientKey } = params;
 
   const docRes = await query<{ id: string; organization_id: string; current_version_id: string | null }>(
     'SELECT id, organization_id, current_version_id FROM documents WHERE id = $1',
@@ -812,6 +887,103 @@ export async function reindexDocument(params: {
       400,
       'NO_EXTRACTED_TEXT'
     );
+  }
+
+  // Idempotency Key: if client provides key, scope to org, doc, version, and clientKey.
+  // If not provided, generate a fresh unique key so intentional repeat requests without key run fresh.
+  const idempotencyKey = clientKey
+    ? `reindex:${doc.id}:${targetVersionId}:${clientKey}`
+    : `reindex:${doc.id}:${targetVersionId}:${crypto.randomUUID()}`;
+
+  if (isAsync) {
+    const { job, isNew } = await createJob({
+      organizationId: doc.organization_id,
+      type: 'document_reindex',
+      idempotencyKey,
+      payload: {
+        documentId: doc.id,
+        versionId: targetVersionId,
+        organizationId: doc.organization_id,
+        config,
+        stage: 'queued',
+      },
+    });
+
+    if (!isNew) {
+      // Returning existing job reference on retry with identical idempotency key
+      return {
+        success: true,
+        documentId: doc.id,
+        versionId: targetVersionId,
+        status: (job.status as DocumentStatus) || 'queued',
+        chunkCount: Number(job.payload?.chunkCount ?? 0),
+        totalCharacters: Number(job.payload?.totalCharacters ?? 0),
+        totalEstimatedTokens: Number(job.payload?.totalEstimatedTokens ?? 0),
+        embeddingModel: typeof job.payload?.embeddingModel === 'string' ? job.payload.embeddingModel : '',
+        reindexedAt: job.updatedAt,
+        jobId: job.id,
+      };
+    }
+
+    await query(
+      `UPDATE document_versions
+       SET status = 'queued',
+           updated_at = now()
+       WHERE id = $1`,
+      [targetVersionId]
+    );
+
+    await enqueueIngestionJob({
+      jobId: job.id,
+      organizationId: doc.organization_id,
+      documentId: doc.id,
+      versionId: targetVersionId,
+      type: 'document_reindex',
+      config,
+    });
+
+    return {
+      success: true,
+      documentId: doc.id,
+      versionId: targetVersionId,
+      status: 'queued',
+      chunkCount: 0,
+      totalCharacters: 0,
+      totalEstimatedTokens: 0,
+      embeddingModel: '',
+      reindexedAt: new Date().toISOString(),
+      jobId: job.id,
+    };
+  }
+
+  // Synchronous reindexing path
+  if (clientKey) {
+    const { job, isNew } = await createJob({
+      organizationId: doc.organization_id,
+      type: 'document_reindex',
+      idempotencyKey,
+      payload: {
+        documentId: doc.id,
+        versionId: targetVersionId,
+        organizationId: doc.organization_id,
+        config,
+      },
+    });
+
+    if (!isNew && job.status === 'ready') {
+      return {
+        success: true,
+        documentId: doc.id,
+        versionId: targetVersionId,
+        status: 'ready',
+        chunkCount: Number(job.payload?.chunkCount ?? 0),
+        totalCharacters: Number(job.payload?.totalCharacters ?? 0),
+        totalEstimatedTokens: Number(job.payload?.totalEstimatedTokens ?? 0),
+        embeddingModel: typeof job.payload?.embeddingModel === 'string' ? job.payload.embeddingModel : '',
+        reindexedAt: job.updatedAt,
+        jobId: job.id,
+      };
+    }
   }
 
   try {
