@@ -478,3 +478,55 @@ This document records the architectural decisions, trade-offs, and rationale ado
   - Zero stranded jobs across Redis restarts or network partitions via lease-based recovery and periodic scanner.
   - Strict split-brain safety via database-level transaction fencing tokens: expired workers cannot delete or insert chunks or corrupt document versions.
   - Complete multi-tenant isolation, deterministic status observability, and client-controlled race-safe idempotency.
+
+---
+
+### ADR-011: GitHub Repository and Code Ingestion Architecture
+
+- **Status**: Accepted (Phase 11)
+- **Date**: 2026-11-06
+- **Context**:
+  1. Developers need to ask questions about software codebases alongside markdown, text, and PDF documentation.
+  2. Ingesting code repositories presents distinct security and operational challenges:
+     - Arbitrary URL fetching vulnerabilities, SSRF, host confusion, and shell injection risks if shelling out to `git clone`.
+     - Untrusted repository content (malicious READMEs, prompt injection in comments, binary files, embedded credentials).
+     - Scale and resource exhaustion: huge repositories, vendor directories (`node_modules`), build output, minified bundles, lockfiles.
+     - Preserving source provenance: line numbers, file paths, programming languages, commit SHAs, and permalinks.
+     - Citations must distinguish document citations from code citations without allowing LLMs to fabricate arbitrary URLs.
+     - Idempotency and snapshot management: re-importing the same commit should be a no-op; newer commits must produce incremented versions.
+- **Decision**:
+  1. **Strict GitHub URL Validation & Direct HTTPS REST API Client (No Git Shell-Out)**:
+     - URL validation (`apps/api/src/services/github/githubUrlValidator.ts`): Rejects all non-HTTPS schemes, deceptive hostnames (e.g. `github.com.evil.com`), embedded user credentials, alternate ports, local/private IPs, directory traversal, and malformed paths. Only standard public GitHub URLs (`https://github.com/owner/repo`) are accepted.
+     - Client strategy (`apps/api/src/services/github/githubClient.ts`): Communicates strictly via GitHub REST API over HTTPS (`api.github.com`). Employs `redirect: 'error'` to prevent redirect hijacking to untrusted third-party hosts. Rejects private repositories explicitly with a clear, safe message. Rate limits (HTTP 429 or `x-ratelimit-remaining: 0`) are mapped to `GitHubRateLimitError` for worker retry with exponential backoff.
+  2. **Configurable Resource Limits & Auditable Ignore Policy**:
+     - Configurable defaults via environment: `GITHUB_MAX_REPO_BYTES` (50MB), `GITHUB_MAX_FILES` (300), `GITHUB_MAX_FILE_BYTES` (200KB), `GITHUB_REQUEST_TIMEOUT_MS` (15s).
+     - Multi-layer exclusion policy (`apps/api/src/services/github/githubPolicy.ts`):
+       - Binary file extensions (`.png`, `.exe`, `.wasm`, `.zip`, `.pdf`, `.dylib`, etc.) and runtime null-byte (`\0`) detection.
+       - Vendor and dependency directories (`node_modules/`, `vendor/`, `.pnpm/`, `Pods/`).
+       - Generated assets, build artifacts, and caches (`dist/`, `build/`, `.next/`, `target/`).
+       - Lockfiles (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `cargo.lock`).
+       - Credential and secret pattern detection (`BEGIN PRIVATE KEY`, AWS keys, GitHub PATs `ghp_...`, OpenAI keys `sk-...`).
+       - Path normalization via `path.posix.normalize` with directory traversal protection.
+  3. **Deterministic Line-Based Code Chunking**:
+     - Module: `apps/api/src/services/github/codeChunker.ts`.
+     - Splits code files on logical line boundaries (preferring blank lines or block ends) up to `maxChunkSizeChars` (default 800) with `chunkOverlapChars` (default 120).
+     - Retains exact 1-indexed `lineStart` and `lineEnd` metadata, `filePath`, programming language (via extension mapping), `repoOwner`, `repoName`, `repoRef`, and `commitSha`.
+  4. **Integration with BullMQ Background Processing, Fencing, and Idempotency**:
+     - `POST /api/github/import` requires authentication and Member+ organization membership (`hasMinimumRole(role, 'member')`).
+     - Atomically finds or creates logical document record (`source_type = 'github'`) and document version.
+     - Background worker executes `processRepoImportJob` with distributed lease claiming and transaction fencing. Chunks and embeddings are persisted via `persistChunksWithEmbeddings`.
+     - Idempotency: re-importing the same commit SHA detects the existing ready version and returns the existing job/version without duplicate chunk persistence. Importing a newer commit SHA increments the version number, processes chunks, and activates the new version monotonically.
+  5. **Grounded RAG Integration & Dual Citations**:
+     - Database migration `006_add_citation_metadata.sql` adds `metadata JSONB NOT NULL DEFAULT '{}'::jsonb` to `citations`.
+     - Citation validator (`apps/api/src/services/chat/citationValidator.ts`) identifies code chunks (`sourceType: 'code'`), extracting `repoOwner`, `repoName`, `repoRef`, `commitSha`, `filePath`, and line ranges.
+     - For public repositories, generates deterministic `githubUrl` permalinks (`https://github.com/owner/repo/blob/sha/path#L1-L10`) and internal safe source viewer links (`sourceUrl: /api/github/repos/:id/source?filePath=...`).
+     - Strict protection against hallucinated URLs: LLM-generated URLs in model responses are never trusted or emitted as citations.
+  6. **Safe Source Viewer Endpoint & Cross-Tenant Security**:
+     - `GET /api/github/repos/:id/source` accepts `filePath` and optional `versionId`.
+     - Reconstructs file lines from indexed chunks for authorized organization members only.
+     - Strict tenant boundary: cross-tenant access returns 404 (`REPO_NOT_FOUND`).
+- **Consequences**:
+  - Secure, controlled ingestion of public GitHub codebases without shelling out to Git or exposing host environments.
+  - Unified search, chat, and retrieval experience across both text documentation and code repositories.
+  - High-fidelity source grounding with exact file paths, line ranges, and GitHub permalinks.
+  - Zero leakage of tokens, credentials, or internal file paths in errors, logs, or API payloads.

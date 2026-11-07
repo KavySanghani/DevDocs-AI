@@ -202,4 +202,84 @@ This matches the authentication guidelines [1].`;
     expect(result.sanitizedAnswer).not.toContain('ungrounded [99]');
     expect(result.sanitizedAnswer).toContain('verified [1].');
   });
+
+  it('validates code citations with repository metadata, github permalink, and internal source viewer reference', () => {
+    const codeChunks: RetrievedChunk[] = [
+      {
+        id: '44444444-4444-4444-4444-444444444444',
+        documentId: 'dddd1111-dddd-dddd-dddd-dddddddddddd',
+        documentName: 'owner/my-repo',
+        documentVersionId: 'ver33333-3333-3333-3333-333333333333',
+        chunkIndex: 0,
+        content: 'export function calculateMetrics(): number {\n  return 42;\n}',
+        characterCount: 57,
+        filePath: 'src/analytics/metrics.ts',
+        lineStart: 10,
+        lineEnd: 25,
+        rank: 1,
+        sourceType: 'code',
+        repoOwner: 'owner',
+        repoName: 'my-repo',
+        repoRef: 'main',
+        commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
+      },
+    ];
+
+    const rawAnswer = 'The calculation is defined in metrics [1].';
+    const result = validateAndSanitizeCitations(rawAnswer, codeChunks);
+
+    expect(result.validCitationCount).toBe(1);
+    expect(result.citations.length).toBe(1);
+
+    const citation = result.citations[0]!;
+    expect(citation.citationNumber).toBe(1);
+    expect(citation.sourceType).toBe('code');
+    expect(citation.repoOwner).toBe('owner');
+    expect(citation.repoName).toBe('my-repo');
+    expect(citation.repoRef).toBe('main');
+    expect(citation.commitSha).toBe('abcdef1234567890abcdef1234567890abcdef12');
+    expect(citation.filePath).toBe('src/analytics/metrics.ts');
+    expect(citation.lineStart).toBe(10);
+    expect(citation.lineEnd).toBe(25);
+    expect(citation.githubUrl).toBe(
+      'https://github.com/owner/my-repo/blob/abcdef1234567890abcdef1234567890abcdef12/src/analytics/metrics.ts#L10-L25'
+    );
+    expect(citation.sourceUrl).toBe(
+      '/api/github/repos/dddd1111-dddd-dddd-dddd-dddddddddddd/source?filePath=src%2Fanalytics%2Fmetrics.ts&versionId=ver33333-3333-3333-3333-333333333333'
+    );
+  });
+
+  it('correctly encodes github permalink path segments with spaces, hash, and unicode characters', () => {
+    const codeChunks: RetrievedChunk[] = [
+      {
+        id: '55555555-5555-5555-5555-555555555555',
+        documentId: 'dddd2222-dddd-dddd-dddd-dddddddddddd',
+        documentName: 'owner/special-repo',
+        documentVersionId: 'ver44444-4444-4444-4444-444444444444',
+        chunkIndex: 0,
+        content: 'console.log("special path");',
+        characterCount: 28,
+        filePath: 'docs/user guide #1/tést file.ts',
+        lineStart: 5,
+        lineEnd: 15,
+        rank: 1,
+        sourceType: 'code',
+        repoOwner: 'owner',
+        repoName: 'special-repo',
+        repoRef: 'main',
+        commitSha: 'abcdef1234567890abcdef1234567890abcdef12',
+      },
+    ];
+
+    const result = validateAndSanitizeCitations('Path referenced [1].', codeChunks);
+    expect(result.citations.length).toBe(1);
+
+    const citation = result.citations[0]!;
+    expect(citation.githubUrl).toBe(
+      'https://github.com/owner/special-repo/blob/abcdef1234567890abcdef1234567890abcdef12/docs/user%20guide%20%231/t%C3%A9st%20file.ts#L5-L15'
+    );
+    expect(citation.sourceUrl).toBe(
+      '/api/github/repos/dddd2222-dddd-dddd-dddd-dddddddddddd/source?filePath=docs%2Fuser%20guide%20%231%2Ft%C3%A9st%20file.ts&versionId=ver44444-4444-4444-4444-444444444444'
+    );
+  });
 });

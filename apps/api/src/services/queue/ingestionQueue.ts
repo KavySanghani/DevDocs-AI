@@ -7,7 +7,7 @@ export interface IngestionJobData {
   organizationId: string;
   documentId: string;
   versionId: string;
-  type: 'document_ingestion' | 'document_reindex';
+  type: 'document_ingestion' | 'document_reindex' | 'repo_import';
   config?: {
     maxChunkSizeChars?: number | undefined;
     chunkOverlapChars?: number | undefined;
@@ -33,7 +33,7 @@ export function getIngestionQueue(): Queue<IngestionJobData> {
   const defaultJobOptions: JobsOptions = {
     attempts: env.INGESTION_MAX_ATTEMPTS ?? 3,
     backoff: {
-      type: 'exponential',
+      type: 'rateLimitOrExponential',
       delay: env.INGESTION_BACKOFF_MS ?? 1000,
     },
     removeOnComplete: 1000,

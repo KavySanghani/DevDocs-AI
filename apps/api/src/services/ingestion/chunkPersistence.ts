@@ -195,6 +195,27 @@ export async function persistChunksWithEmbeddings(
         [JSON.stringify(versionFinalization.sourceDetails), documentVersionId]
       );
 
+      // Monotonic pointer activation (F-04 Phase 9)
+      await client.query(
+        `UPDATE documents d
+         SET current_version_id = new_v.id,
+             updated_at = now()
+         FROM document_versions new_v
+         WHERE d.id = $2
+           AND new_v.id = $1
+           AND new_v.document_id = d.id
+           AND new_v.status = 'ready'
+           AND (
+             d.current_version_id IS NULL
+             OR new_v.version_number >= (
+               SELECT cur_v.version_number
+               FROM document_versions cur_v
+               WHERE cur_v.id = d.current_version_id
+             )
+           )`,
+        [documentVersionId, documentId]
+      );
+
       await client.query(
         `UPDATE documents SET updated_at = now() WHERE id = $1`,
         [documentId]

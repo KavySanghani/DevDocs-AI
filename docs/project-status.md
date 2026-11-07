@@ -386,16 +386,65 @@ Last Updated: Phase 10 Completion Checkpoint
 
 ---
 
-## 11. Known Gaps & Deferred Items
+## 11. Phase 11 — GitHub Repository and Code Ingestion (Completed)
+
+- [x] Database Migration 006:
+  - Created repeatable migration `db/migrations/006_add_citation_metadata.sql` adding `metadata JSONB NOT NULL DEFAULT '{}'::jsonb` to `citations` table.
+  - Verified migrations 001–005 are completely untouched.
+  - Verified `packages/db/tests/schema.test.ts` passes (46/46 tests).
+- [x] Strict GitHub URL Validation and Security (`apps/api/src/services/github/githubUrlValidator.ts`):
+  - Strictly requires HTTPS scheme and hostname exactly `github.com`.
+  - Rejects HTTP, alternate schemes (`ssh:`, `git:`, `ftp:`), deceptive hostnames (`github.com.evil.com`), embedded user credentials (`user:pass@`), alternate ports, localhost, loopback, private IPs (`10.0.0.0/8`, `192.168.0.0/16`, `127.0.0.1`), directory traversal attempts, and malformed paths.
+  - Safely normalizes repository canonical URLs and extracts owner, repo, and optional ref (branch, tag, or commit SHA).
+- [x] Multi-Tier Resource Limits and Auditable Exclusion Policy (`apps/api/src/services/github/githubPolicy.ts`):
+  - Enforces configurable limits via environment variables: `GITHUB_MAX_REPO_BYTES` (50MB), `GITHUB_MAX_FILES` (300), `GITHUB_MAX_FILE_BYTES` (200KB), `GITHUB_REQUEST_TIMEOUT_MS` (15s).
+  - Excludes binary file extensions (`.png`, `.exe`, `.dll`, `.wasm`, `.zip`, `.pdf`, `.dylib`, etc.) and performs runtime null-byte (`\0`) binary detection.
+  - Excludes vendor and dependency directories (`node_modules/`, `vendor/`, `.pnpm/`, `Pods/`).
+  - Excludes generated lockfiles (`package-lock.json`, `yarn.lock`, `pnpm-lock.yaml`, `cargo.lock`).
+  - Excludes build artifacts and minified assets (`dist/`, `build/`, `.next/`, `*.min.js`, `*.min.css`).
+  - Excludes secret-like files and detects credential patterns (`BEGIN PRIVATE KEY`, AWS keys, GitHub PATs `ghp_...`, OpenAI keys `sk-...`).
+  - Enforces strict path normalization and blocks directory traversal (`path.posix.normalize`).
+  - Detects programming languages across major source file extensions.
+- [x] GitHub REST API Client (`apps/api/src/services/github/githubClient.ts`):
+  - Direct HTTPS REST API communication with GitHub (`api.github.com`), avoiding any shell execution of `git clone`.
+  - Configures `redirect: 'error'` to block arbitrary third-party redirects.
+  - Explicitly rejects private repositories.
+  - Classifies rate limits (HTTP 429 or `x-ratelimit-remaining: 0`) into retryable `GitHubRateLimitError`.
+  - Fetches repository tree recursively and decodes base64 blobs into clean UTF-8 source text.
+- [x] Deterministic Line-Based Code Chunking (`apps/api/src/services/github/codeChunker.ts`):
+  - Splits source files along line boundaries (preferring blank lines or block ends) up to `maxChunkSizeChars` (800) with `chunkOverlapChars` (120).
+  - Preserves exact 1-indexed `lineStart` and `lineEnd` numbers, `filePath`, detected language, `repoOwner`, `repoName`, `repoRef`, and `commitSha`.
+- [x] Background Ingestion Pipeline & Worker Integration (`apps/api/src/services/github/githubIngestionService.ts`):
+  - `POST /api/github/import` validates URLs, checks Member+ RBAC, ensures idempotency, and enqueues BullMQ job returning HTTP 202 Accepted.
+  - Worker processes job via `processRepoImportJob` under distributed lease claiming and transaction fencing.
+  - Chunks and embeddings are persisted atomically via `persistChunksWithEmbeddings`.
+  - Same-commit re-import idempotency: returning existing ready version and job without duplicate chunks.
+  - Newer-commit version incrementation: increments `version_number` and monotonically activates new version as `current_version_id`.
+- [x] Grounded Citations & Internal Source Viewer:
+  - Citations distinguish `sourceType: 'code'` from `'document'`.
+  - For code chunks, generates exact GitHub permalinks (`https://github.com/owner/repo/blob/sha/path#L1-L10`) and internal source viewer references (`/api/github/repos/:id/source?filePath=...`).
+  - Strictly rejects LLM-hallucinated citation URLs.
+  - Source viewer endpoint `GET /api/github/repos/:id/source` returns source lines, total line count, and language for authorized organization members.
+  - Cross-tenant requests strictly blocked (returns 404 `REPO_NOT_FOUND`).
+- [x] Testing:
+  - 32 dedicated automated tests in `apps/api/tests/github.test.ts` covering URL validation, ignore policies, chunking, mocked GitHub client, worker ingestion, idempotency, versioning, RBAC, and source viewer.
+  - Updated citation validator tests in `apps/api/tests/citationValidator.test.ts` verifying code citation provenance.
+  - **Full test suite passes**: 19 test files, 317 tests passed (1 skipped), 0 failures.
+  - **Typecheck, build, lint, and whitespace checks passing cleanly** with 0 errors.
+  - **Audit**: 0 vulnerabilities.
+
+---
+
+## 12. Known Gaps & Deferred Items
 
 The following items are intentionally deferred to subsequent phases:
-1. **GitHub Codebase Ingestion**: Scheduled for **Phase 11**.
-2. **Frontend Workspaces, Search & Chat UI**: Scheduled for **Phases 12 & 13**.
+1. **Frontend Workspaces UI**: Scheduled for **Phase 12**.
+2. **Frontend Search, Chat & Citations UI**: Scheduled for **Phase 13**.
 3. **Feedback & Admin Analytics**: Scheduled for **Phase 14**.
 
 ---
 
-## 12. Next Step
+## 13. Next Step
 
-Phase 10 Final Targeted Remediation (SEC-10-01 to SEC-10-03) complete and verified with 333 passing tests and 0 vulnerabilities.
-**Status**: Ready for final review.
+Phase 11 (GitHub Repository and Code Ingestion) complete and verified with all quality gates passing. Working tree left unstaged for independent review.
+**Status**: Ready for independent review.

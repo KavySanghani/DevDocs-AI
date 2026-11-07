@@ -389,6 +389,13 @@ export const RetrievedChunkSchema = z.object({
   distance: z.number().optional(),
   rank: z.number().int().min(1),
   metadata: z.record(z.string(), z.unknown()).optional(),
+  sourceType: z.enum(['document', 'code']).optional(),
+  repoOwner: z.string().optional(),
+  repoName: z.string().optional(),
+  repoRef: z.string().optional(),
+  commitSha: z.string().optional(),
+  githubUrl: z.string().optional(),
+  sourceUrl: z.string().optional(),
   // Phase 7 diagnostics
   score: z.number().optional(),
   vectorRank: z.number().int().min(1).nullable().optional(),
@@ -505,6 +512,15 @@ export const CitationResponseSchema = z.object({
   lineEnd: z.number().int().nullable().optional(),
   snippet: z.string().nullable().optional(),
   sourceDeleted: z.boolean().optional(),
+  // Phase 11 Code & Repository Citation Metadata
+  sourceType: z.enum(['document', 'code']).optional(),
+  repoOwner: z.string().nullable().optional(),
+  repoName: z.string().nullable().optional(),
+  repoRef: z.string().nullable().optional(),
+  commitSha: z.string().nullable().optional(),
+  githubUrl: z.string().nullable().optional(),
+  sourceUrl: z.string().nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
 });
 export type CitationResponse = z.infer<typeof CitationResponseSchema>;
 
@@ -642,3 +658,68 @@ export const AsyncJobResponseSchema = z.object({
   message: z.string().optional(),
 });
 export type AsyncJobResponse = z.infer<typeof AsyncJobResponseSchema>;
+
+// ==============================================================================
+// GitHub Repository & Code Ingestion Schemas (Phase 11)
+// ==============================================================================
+
+export const GitHubImportRequestSchema = z.object({
+  repoUrl: z.string().min(1, 'Repository URL is required'),
+  ref: z.string().min(1).max(255).optional(),
+  name: z.string().min(1).max(255).optional(),
+  organizationId: z.string().uuid().optional(),
+});
+export type GitHubImportRequest = z.infer<typeof GitHubImportRequestSchema>;
+
+export const GitHubImportResponseSchema = z.object({
+  jobId: z.string().uuid(),
+  status: JobStatusSchema,
+  documentId: z.string().uuid(),
+  versionId: z.string().uuid(),
+  isExisting: z.boolean().optional(),
+  repository: z.object({
+    owner: z.string(),
+    repo: z.string(),
+    ref: z.string().optional(),
+    commitSha: z.string().optional(),
+  }),
+  message: z.string(),
+});
+export type GitHubImportResponse = z.infer<typeof GitHubImportResponseSchema>;
+
+export const GitHubRepoItemSchema = z.object({
+  id: z.string().uuid(),
+  organizationId: z.string().uuid(),
+  name: z.string(),
+  sourceType: z.literal('github'),
+  currentVersionId: z.string().uuid().nullable(),
+  versionNumber: z.number().int().optional(),
+  commitSha: z.string().optional(),
+  status: DocumentStatusSchema.optional(),
+  repoOwner: z.string().optional(),
+  repoName: z.string().optional(),
+  repoRef: z.string().optional(),
+  fileCount: z.number().int().optional(),
+  chunkCount: z.number().int().optional(),
+  totalBytes: z.number().int().optional(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+});
+export type GitHubRepoItem = z.infer<typeof GitHubRepoItemSchema>;
+
+export const GitHubSourceViewerResponseSchema = z.object({
+  documentId: z.string().uuid(),
+  documentName: z.string(),
+  filePath: z.string(),
+  language: z.string(),
+  commitSha: z.string(),
+  repoOwner: z.string(),
+  repoName: z.string(),
+  repoRef: z.string(),
+  lineStart: z.number().int().nullable().optional(),
+  lineEnd: z.number().int().nullable().optional(),
+  totalLines: z.number().int(),
+  content: z.string(),
+  githubUrl: z.string().url().optional(),
+});
+export type GitHubSourceViewerResponse = z.infer<typeof GitHubSourceViewerResponseSchema>;

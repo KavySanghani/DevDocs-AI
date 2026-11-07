@@ -14,6 +14,7 @@ import {
 import { ingestDocumentVersion } from '../ingestion/index.js';
 import type { EmbeddingProvider } from '../ingestion/types.js';
 import { getEnv } from '../../config/env.js';
+import { processRepoImportJob, GitHubRateLimitError, type GitHubClient } from '../github/index.js';
 
 let ingestionWorker: Worker<IngestionJobData> | null = null;
 
@@ -27,6 +28,11 @@ export function isTransientError(err: unknown): boolean {
   const msg = err instanceof Error ? err.message : String(err);
   const code = (err as { code?: string })?.code;
   const statusCode = (err as { statusCode?: number })?.statusCode;
+  const isExplicitTransient = (err as { isTransient?: boolean })?.isTransient;
+
+  if (isExplicitTransient === true) {
+    return true;
+  }
 
   // Rate limiting or 5xx server errors from providers
   if (statusCode === 429 || (statusCode && statusCode >= 500 && statusCode < 600)) {
@@ -58,8 +64,48 @@ export function isTransientError(err: unknown): boolean {
   return false;
 }
 
+/**
+ * Calculates retry delay in milliseconds for rate-limited requests.
+ * Uses GitHub reset epoch seconds when available, ensuring a bounded positive delay.
+ */
+export function calculateRateLimitDelay(
+  resetEpochSeconds?: number | undefined,
+  nowMs: number = Date.now(),
+  minDelayMs: number = 1000,
+  maxDelayMs: number = 3600000 // 1 hour cap
+): number {
+  if (typeof resetEpochSeconds !== 'number' || isNaN(resetEpochSeconds)) {
+    return minDelayMs;
+  }
+  const resetMs = resetEpochSeconds * 1000;
+  const diffMs = resetMs - nowMs;
+  if (diffMs <= 0) {
+    return minDelayMs;
+  }
+  return Math.min(Math.max(diffMs, minDelayMs), maxDelayMs);
+}
+
+/**
+ * Custom backoff strategy for BullMQ Worker:
+ * If error is a GitHubRateLimitError with a reset timestamp, returns delay until reset.
+ * Otherwise, falls back to standard exponential backoff.
+ */
+export function rateLimitBackoffStrategy(
+  attemptsMade: number,
+  _type?: string,
+  err?: Error
+): number {
+  const env = getEnv();
+  const baseDelay = env.INGESTION_BACKOFF_MS ?? 1000;
+  if (err instanceof GitHubRateLimitError && err.resetEpochSeconds) {
+    return calculateRateLimitDelay(err.resetEpochSeconds, Date.now(), baseDelay);
+  }
+  return Math.round(Math.pow(2, Math.max(0, attemptsMade - 1)) * baseDelay);
+}
+
 export interface ProcessIngestionOptions {
   overrideProvider?: EmbeddingProvider | undefined;
+  gitHubClient?: GitHubClient | undefined;
   workerId?: string | undefined;
   leaseDurationSeconds?: number | undefined;
   heartbeatIntervalMs?: number | undefined;
@@ -172,22 +218,37 @@ export async function processIngestionJobDirectly(
     // SEC-10-02: Pass fencingContext ({ jobId, workerId, fencingToken }) so that chunk deletion,
     // chunk insertion, version status update ('ready'), job status update ('ready'), and monotonic
     // current_version_id activation are all executed in ONE single transaction under SELECT ... FOR UPDATE.
-    const ingestRes = await ingestDocumentVersion({
-      documentId,
-      documentVersionId: versionId,
-      organizationId,
-      fencingContext: {
-        jobId,
-        workerId,
-        fencingToken,
-      },
-      ...(config ? { config } : {}),
-      ...(overrideProvider ? { provider: overrideProvider } : {}),
-    });
+    let chunkCount = 0;
+    if (data.type === 'repo_import') {
+      const repoRes = await processRepoImportJob(data, {
+        client: options.gitHubClient,
+        overrideProvider,
+        fencingContext: {
+          jobId,
+          workerId,
+          fencingToken,
+        },
+      });
+      chunkCount = repoRes.chunkCount;
+    } else {
+      const ingestRes = await ingestDocumentVersion({
+        documentId,
+        documentVersionId: versionId,
+        organizationId,
+        fencingContext: {
+          jobId,
+          workerId,
+          fencingToken,
+        },
+        ...(config ? { config } : {}),
+        ...(overrideProvider ? { provider: overrideProvider } : {}),
+      });
+      chunkCount = ingestRes.chunkCount;
+    }
 
     return {
       success: true,
-      chunkCount: ingestRes.chunkCount,
+      chunkCount,
       versionId,
     };
   } catch (err) {
@@ -202,13 +263,18 @@ export async function processIngestionJobDirectly(
     const transient = isTransientError(err);
 
     if (transient && currentAttempts < claim.job!.max_attempts) {
+      let retryDelayMs: number | undefined;
+      if (err instanceof GitHubRateLimitError && err.resetEpochSeconds) {
+        retryDelayMs = calculateRateLimitDelay(err.resetEpochSeconds);
+      }
       // Mark as retrying with backoff details and release lease
+      const rateLimitNote = retryDelayMs ? ` (retry in ${Math.round(retryDelayMs / 1000)}s)` : '';
       const released = await releaseJobFailure({
         jobId,
         workerId,
         fencingToken,
         newStatus: 'retrying',
-        errorSummary: `[Attempt ${currentAttempts}/${claim.job!.max_attempts}] ${errorMsg}`,
+        errorSummary: `[Attempt ${currentAttempts}/${claim.job!.max_attempts}] ${errorMsg}${rateLimitNote}`,
         stage: 'retry_backoff',
       });
       if (!released) {
@@ -277,6 +343,9 @@ export function startIngestionWorker(options?: {
     {
       connection: redis,
       concurrency,
+      settings: {
+        backoffStrategy: rateLimitBackoffStrategy,
+      },
     }
   );
 

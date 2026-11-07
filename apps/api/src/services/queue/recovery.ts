@@ -98,7 +98,7 @@ export async function recoverStuckQueuedJobs(options?: {
       organizationId: job.organization_id,
       documentId,
       versionId,
-      type: job.type as 'document_ingestion' | 'document_reindex',
+      type: job.type as 'document_ingestion' | 'document_reindex' | 'repo_import',
       config: payload.config as IngestionJobData['config'],
     };
 

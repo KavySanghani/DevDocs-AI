@@ -175,6 +175,35 @@ export function validateAndSanitizeCitations(
     }
     seenChunkIds.add(chunk.id);
 
+    const chunkMeta = (chunk.metadata || {}) as Record<string, unknown>;
+    const isCode =
+      chunk.sourceType === 'code' ||
+      chunkMeta.sourceType === 'code' ||
+      Boolean(chunk.filePath && !chunk.pageNumber);
+    const repoOwner =
+      chunk.repoOwner ??
+      (typeof chunkMeta.repoOwner === 'string' ? chunkMeta.repoOwner : null);
+    const repoName =
+      chunk.repoName ??
+      (typeof chunkMeta.repoName === 'string' ? chunkMeta.repoName : null);
+    const repoRef =
+      chunk.repoRef ??
+      (typeof chunkMeta.repoRef === 'string' ? chunkMeta.repoRef : null);
+    const commitSha =
+      chunk.commitSha ??
+      (typeof chunkMeta.commitSha === 'string' ? chunkMeta.commitSha : null);
+
+    let githubUrl: string | null = null;
+    let sourceUrl: string | null = null;
+
+    if (isCode && repoOwner && repoName && commitSha && chunk.filePath) {
+      const lineStart = chunk.lineStart ?? 1;
+      const lineEnd = chunk.lineEnd ?? lineStart;
+      const encodedPath = chunk.filePath.split('/').map(encodeURIComponent).join('/');
+      githubUrl = `https://github.com/${repoOwner}/${repoName}/blob/${commitSha}/${encodedPath}#L${lineStart}-L${lineEnd}`;
+      sourceUrl = `/api/github/repos/${chunk.documentId}/source?filePath=${encodeURIComponent(chunk.filePath)}&versionId=${chunk.documentVersionId}`;
+    }
+
     validatedCitations.push({
       citationNumber: index,
       chunkId: chunk.id,
@@ -186,6 +215,14 @@ export function validateAndSanitizeCitations(
       lineStart: chunk.lineStart ?? null,
       lineEnd: chunk.lineEnd ?? null,
       snippet: chunk.content.slice(0, 300).trim(),
+      sourceType: isCode ? 'code' : 'document',
+      repoOwner,
+      repoName,
+      repoRef,
+      commitSha,
+      githubUrl,
+      sourceUrl,
+      metadata: chunkMeta,
     });
   }
 

@@ -9,6 +9,9 @@ describe('Environment Validation', () => {
     expect(env.NODE_ENV).toBe('development');
     expect(env.LOG_LEVEL).toBe('info');
     expect(env.CORS_ORIGIN).toBe('http://localhost:5173');
+    expect(env.GITHUB_MAX_REPO_BYTES).toBe(52428800);
+    expect(env.GITHUB_MAX_FILES).toBe(300);
+    expect(env.GITHUB_MAX_FILE_BYTES).toBe(204800);
   });
 
   it('coerces and validates custom valid PORT', () => {

@@ -66,6 +66,7 @@ interface CitationRow {
   line_start: number | null;
   line_end: number | null;
   snippet: string | null;
+  metadata?: Record<string, unknown> | null;
   created_at: Date;
 }
 
@@ -208,7 +209,7 @@ export async function getChatSession(
   if (messageIds.length > 0) {
     const citeRes = await query<CitationRow>(
       `SELECT id, message_id, chunk_id, citation_number, document_id, document_name,
-              page_number, section_title, file_path, line_start, line_end, snippet, created_at
+              page_number, section_title, file_path, line_start, line_end, snippet, metadata, created_at
        FROM citations
        WHERE message_id = ANY($1::uuid[])
        ORDER BY citation_number ASC`,
@@ -217,6 +218,7 @@ export async function getChatSession(
 
     for (const c of citeRes.rows) {
       const sourceDeleted = !c.chunk_id || !c.document_id;
+      const meta = (c.metadata ?? {}) as Record<string, unknown>;
       const list = citationsByMessageId.get(c.message_id) ?? [];
       list.push({
         id: c.id,
@@ -231,6 +233,14 @@ export async function getChatSession(
         lineEnd: c.line_end,
         snippet: c.snippet,
         sourceDeleted: sourceDeleted ? true : undefined,
+        sourceType: (meta.sourceType as 'document' | 'code') ?? undefined,
+        repoOwner: typeof meta.repoOwner === 'string' ? meta.repoOwner : undefined,
+        repoName: typeof meta.repoName === 'string' ? meta.repoName : undefined,
+        repoRef: typeof meta.repoRef === 'string' ? meta.repoRef : undefined,
+        commitSha: typeof meta.commitSha === 'string' ? meta.commitSha : undefined,
+        githubUrl: typeof meta.githubUrl === 'string' ? meta.githubUrl : undefined,
+        sourceUrl: typeof meta.sourceUrl === 'string' ? meta.sourceUrl : undefined,
+        metadata: meta,
       });
       citationsByMessageId.set(c.message_id, list);
     }
@@ -493,11 +503,22 @@ export async function postChatMessage(
   // 14. Persist validated citations in citations table
   const persistedCitations: CitationResponse[] = [];
   for (const cite of validation.citations) {
+    const citationMeta = {
+      sourceType: cite.sourceType,
+      repoOwner: cite.repoOwner,
+      repoName: cite.repoName,
+      repoRef: cite.repoRef,
+      commitSha: cite.commitSha,
+      githubUrl: cite.githubUrl,
+      sourceUrl: cite.sourceUrl,
+      ...(cite.metadata || {}),
+    };
+
     const citeRes = await query<{ id: string }>(
       `INSERT INTO citations (
          message_id, chunk_id, citation_number, document_id, document_name,
-         page_number, section_title, file_path, line_start, line_end, snippet
-       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+         page_number, section_title, file_path, line_start, line_end, snippet, metadata
+       ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
         assistantMsg.id,
@@ -511,6 +532,7 @@ export async function postChatMessage(
         cite.lineStart,
         cite.lineEnd,
         cite.snippet,
+        JSON.stringify(citationMeta),
       ]
     );
 

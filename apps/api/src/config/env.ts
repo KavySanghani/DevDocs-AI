@@ -113,6 +113,29 @@ export const ApiEnvSchema = z
       .default('1000')
       .transform((val) => parseInt(val, 10))
       .pipe(z.number().int().positive()),
+
+    // GitHub Codebase Ingestion Configuration (Phase 11)
+    GITHUB_TOKEN: z.string().optional(),
+    GITHUB_MAX_REPO_BYTES: z
+      .string()
+      .default('52428800') // 50 MB
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    GITHUB_MAX_FILES: z
+      .string()
+      .default('300')
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    GITHUB_MAX_FILE_BYTES: z
+      .string()
+      .default('204800') // 200 KB
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
+    GITHUB_REQUEST_TIMEOUT_MS: z
+      .string()
+      .default('15000') // 15 seconds
+      .transform((val) => parseInt(val, 10))
+      .pipe(z.number().int().positive()),
   })
   .superRefine((data, ctx) => {
     if (data.NODE_ENV === 'production') {

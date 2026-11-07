@@ -53,7 +53,7 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       const res = await client.query<{ version: string; name: string }>(
         'SELECT version, name FROM schema_migrations ORDER BY version ASC'
       );
-      expect(res.rows.length).toBe(5);
+      expect(res.rows.length).toBe(6);
       expect(res.rows[0]?.version).toBe('001');
       expect(res.rows[0]?.name).toBe('enable_pgvector');
       expect(res.rows[1]?.version).toBe('002');
@@ -64,17 +64,19 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
       expect(res.rows[3]?.name).toBe('create_citations');
       expect(res.rows[4]?.version).toBe('005');
       expect(res.rows[4]?.name).toBe('add_job_leases');
+      expect(res.rows[5]?.version).toBe('006');
+      expect(res.rows[5]?.name).toBe('add_citation_metadata');
     });
 
     it('re-running migrations is completely idempotent (applies 0, skips all)', async () => {
       const result = await runMigrations(TEST_DATABASE_URL);
       expect(result.applied.length).toBe(0);
-      expect(result.skipped.length).toBe(5);
+      expect(result.skipped.length).toBe(6);
     });
 
     it('reports migration status correctly', async () => {
       const status = await getMigrationStatus(TEST_DATABASE_URL);
-      expect(status.length).toBe(5);
+      expect(status.length).toBe(6);
       expect(status.every((s) => s.applied)).toBe(true);
     });
   });
@@ -510,6 +512,13 @@ describe('PostgreSQL Schema, Constraints, and pgvector Integration', () => {
           [messageId, chunkId]
         )
       ).rejects.toThrow(/chk_citations_number/);
+
+      // Verify metadata JSONB column exists and defaults to empty object (Migration 006)
+      const citeMetadataRes = await client.query<{ metadata: Record<string, unknown> }>(
+        'SELECT metadata FROM citations WHERE id = $1',
+        [insertCite.rows[0]!.id]
+      );
+      expect(citeMetadataRes.rows[0]?.metadata).toEqual({});
     });
   });
 });
